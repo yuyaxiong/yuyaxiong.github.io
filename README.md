@@ -10,7 +10,8 @@
 - `scripts/`：内容校验、页面组件、模板与构建程序。
 - `static/`：样式、浏览器交互与图标。
 - `vendor/`：Marked 17.0.5 与其 MIT 许可；无需安装依赖。
-- `docs/`：GitHub Pages 实际发布目录；由构建生成，不直接编辑。
+- `docs/`：本地构建预览目录，不提交；生成文件同时同步到仓库根目录。
+- `.pages-files.json`：根目录生成文件清单。清单内文件不要手动编辑。
 
 ## 新增文章
 
@@ -19,13 +20,13 @@
 3. 在第二个 `---` 后写 Markdown。文章中的二级标题会生成目录，分类、标签、RSS、站点地图自动更新。
 4. 安装 Node.js 20 或更新版本，在仓库根目录运行 `node scripts/build.mjs` 与 `node scripts/check.mjs`。无需 npm install。
 5. 预览：`python3 -m http.server 4173 --directory docs`，浏览器打开 http://localhost:4173/。
-6. 把文章、修改的站点源文件与重新生成的 `docs/` 一起提交并推送 main。GitHub Pages 从 `main /docs` 自动部署。可在仓库 Actions 查看进度；Settings → Pages 查看线上地址。
+6. 把文章、修改的站点源文件、根目录生成页面及 `.pages-files.json` 一起提交并推送 main。GitHub Pages 从 `main /(root)` 自动部署。可在仓库 Actions 查看进度；Settings → Pages 查看线上地址。
 
 也可运行 `npm run build`、`npm run check`、`npm run preview`，它们只是上述命令的快捷方式。
 
 ## 发布与回滚
 
-Pages 配置：Deploy from a branch → main → /docs。`docs/.nojekyll` 避免二次处理。修正旧文章后更新 `updated`，重新构建、校验、提交。需要回滚时对有问题的提交执行 Git revert，再推送；保留历史，不强制覆盖分支。站点是用户主页，URL 根路径固定；迁移域名时需修改 `site.json` 与构建中的 URL 校验。
+Pages 配置：Deploy from a branch → main → /(root)。根目录 `.nojekyll` 避免二次处理。修正旧文章后更新 `updated`，重新构建、校验、提交。需要回滚时对有问题的提交执行 Git revert，再推送；保留历史，不强制覆盖分支。站点是用户主页，URL 根路径固定；迁移域名时需修改 `site.json` 与构建中的 URL 校验。
 
 发布流程：本地编辑 → 内容校验与构建 → 检查生成目录 → 提交 → GitHub Pages 构建 → 线上核验。构建失败不会更新已部署的版本；修复原因后重新构建并提交。只在文章确认可公开后放入本仓库。
 

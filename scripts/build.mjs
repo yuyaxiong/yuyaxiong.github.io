@@ -1,4 +1,4 @@
-import {mkdir,readFile,writeFile,cp,rm} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,cp,rm,readdir,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {loadPosts} from './content.mjs';
@@ -29,4 +29,15 @@ await writeFile(path.join(output,'sitemap.xml'),`<?xml version="1.0" encoding="U
 await writeFile(path.join(output,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${site.url}/sitemap.xml\n`);
 await writeFile(path.join(output,'feed.xml'),`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${xml(site.name)}</title><link>${site.url}</link><description>${xml(site.description)}</description><language>zh-cn</language>${posts.map(p=>`<item><title>${xml(p.title)}</title><link>${site.url+articlePath(p)}</link><guid isPermaLink="true">${site.url+articlePath(p)}</guid><description>${xml(p.description)}</description><pubDate>${new Date(p.date+'T00:00:00+08:00').toUTCString()}</pubDate></item>`).join('')}</channel></rss>`);
 await writeFile(path.join(output,'.nojekyll'),'');
+// Mirror only files listed in our generated-file manifest into the Pages root.
+// Never recursively remove repository source folders or follow arbitrary paths.
+const manifestPath=path.join(root,'.pages-files.json');
+const allowed=f=>/^(?:favicon\.svg|index\.html|404\.html|feed\.xml|sitemap\.xml|robots\.txt|\.nojekyll|(?:assets|articles|categories|tags|topics|about)\/[^\\]+)$/.test(f)&&!f.split('/').includes('..');
+async function collect(dir,prefix=''){let result=[];for(const entry of await readdir(dir,{withFileTypes:true})){const rel=prefix+entry.name;if(entry.isDirectory())result.push(...await collect(path.join(dir,entry.name),rel+'/'));else result.push(rel);}return result;}
+const generated=await collect(output);
+const previous=JSON.parse(await readFile(manifestPath,'utf8').catch(()=>'[]'));
+if(![...generated,...previous].every(allowed))throw Error('Invalid generated file path');
+for(const f of previous.filter(f=>!generated.includes(f)))await unlink(path.join(root,f)).catch(e=>{if(e.code!=='ENOENT')throw e;});
+for(const f of generated){await mkdir(path.dirname(path.join(root,f)),{recursive:true});await cp(path.join(output,f),path.join(root,f));}
+await writeFile(manifestPath,JSON.stringify(generated.sort(),null,2)+'\n');
 console.log(`Built ${routes.length} pages, ${posts.length} published posts`);

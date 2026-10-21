@@ -10,3 +10,5 @@ source.txt
 source*.png
 .env*
 !.env.example
+
+docs/
