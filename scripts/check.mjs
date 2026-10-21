@@ -23,6 +23,7 @@ for(const file of all){
     if(hash)assert(content.includes(`id="${hash}"`),`${file}: 缺少锚点 ${hash}`);links++;
   }
 }
+assert((await readFile(path.join(out,'robots.txt'),'utf8')).startsWith('User-agent: *\nAllow: /\n'));
 assert(posts.length>0);assert(posts.some(p=>p.slug==='ford-turnaround'));
 const article=posts.find(p=>p.slug==='ford-turnaround');for(const term of ['202.13','124','87.63','97.84','621-101','Olivia S. Jung'])assert(article.body.includes(term),`缺失关键口径 ${term}`);
 for(const file of all)assert.equal(await readFile(path.join(root,path.relative(out,file)),'utf8'),await readFile(file,'utf8'),'Pages root differs from generated staging');
