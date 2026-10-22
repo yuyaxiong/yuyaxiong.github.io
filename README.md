@@ -40,7 +40,7 @@ Pages 配置：Deploy from a branch → main → /(root)。根目录 `.nojekyll`
 
 ## GoatCounter 访问统计
 
-当前配置尚未绑定统计账号，`analytics.enabled` 为 `false`。博客不会加载统计服务或向其发送访问数据。
+当前已绑定 GoatCounter 账号 `yuyaxiong`，`analytics.enabled` 为 `true`，统计后台：https://yuyaxiong.goatcounter.com/ 。只有 HTTPS 正式站点会加载统计服务。统计从接入上线后开始积累，不包含此前的历史访问。
 
 1. 由博客所有者在 https://www.goatcounter.com/signup 注册账号并设置密码。Site domain 填 `yuyaxiong.github.io`，可用的 Account name 建议选 `yuyaxiong-blog`。注册后确认后台地址和邮箱归属，不要把密码、登录 Cookie 或 API token 写入仓库。
 2. 在 GoatCounter 设置中保持统计后台非公开（Public dashboard 关闭），时区设为 Asia/Shanghai；保持逐次访问明细采集关闭。统计账号名是公开配置，不是密钥。

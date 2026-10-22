@@ -6,7 +6,7 @@
   "repository": "https://github.com/yuyaxiong/yuyaxiong.github.io",
   "analytics": {
     "provider": "goatcounter",
-    "enabled": false,
-    "code": null
+    "enabled": true,
+    "code": "yuyaxiong"
   }
 }
