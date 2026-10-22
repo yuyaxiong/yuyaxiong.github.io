@@ -34,6 +34,20 @@ Pages 配置：Deploy from a branch → main → /(root)。根目录 `.nojekyll`
 
 本仓库只保存原创文章与博客源代码、生成页面及 Marked 第三方许可。不要加入原案例 PDF、完整译本、个人文件或凭据。发布目录从明确的公开输入生成。`check` 提供常见泄漏检测，但不能替代提交前阅读文件清单。
 
-博客没有用户账户、评论、表单服务或访问统计。搜索在本地完成；RSS 阅读器会直接请求静态订阅文件。若以后增加统计，先更新隐私说明，再决定是否收集数据。
+博客没有用户账户、评论或表单服务。搜索在本地完成，RSS 阅读器会直接请求静态订阅文件。访问统计由 `site.json` 控制，默认关闭；启用后《关于本站》的隐私说明会同时更新。
 
 原创文章保留权利，转载请联系作者并注明来源。站点第三方解析器许可见 `vendor/LICENSE-marked.md`。引用资料的权利归原权利人所有。
+
+## GoatCounter 访问统计
+
+当前配置尚未绑定统计账号，`analytics.enabled` 为 `false`。博客不会加载统计服务或向其发送访问数据。
+
+1. 由博客所有者在 https://www.goatcounter.com/signup 注册账号并设置密码。Site domain 填 `yuyaxiong.github.io`，可用的 Account name 建议选 `yuyaxiong-blog`。注册后确认后台地址和邮箱归属，不要把密码、登录 Cookie 或 API token 写入仓库。
+2. 在 GoatCounter 设置中保持统计后台非公开（Public dashboard 关闭），时区设为 Asia/Shanghai；保持逐次访问明细采集关闭。统计账号名是公开配置，不是密钥。
+3. 将 `site.json` 中的 `analytics.code` 改为实际账号名（只填 `.goatcounter.com` 前面的部分），再将 `analytics.enabled` 改为 `true`。不要使用尚未注册或不属于自己的站点名。
+4. 运行 `npm run build` 和 `npm run check`。统一模板会把统计加载入口加入全站 HTML，并同步生成隐私说明。发布时提交源文件和根目录生成文件。
+5. 部署完成后访问正式文章，在浏览器网络面板确认 `count.js` 和对应 `/count` 请求，再在自己的 GoatCounter 后台确认页面记录。后台可按页面、日期查看浏览次数、估算访客数和来源网站。只有完成请求与后台记录核验后，才能确认接入成功。
+
+统计仅在 HTTPS 正式域名加载，本地和其他预览域名不计数；发送页面路径时去除查询参数与锚点，来源仅保留 origin。不会采集站内搜索词或绑定点击事件。拦截器、网络限制可能导致少计，浏览量不等于读完人数；上线前的历史访问无法补回。
+
+关闭统计：将 `analytics.enabled` 改为 `false`，重新构建、校验并发布。之后的页面不再加载统计入口，阅读、搜索、打印仍可使用；这不会删除 GoatCounter 已有数据。可在登录后的 GoatCounter 设置中排除自己的浏览，参考 https://www.goatcounter.com/help/skip-dev 。测试用例使用隔离环境，不向统计后台制造测试流量。
