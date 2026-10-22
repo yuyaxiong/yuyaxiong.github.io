@@ -10,7 +10,7 @@ function visit(url,{referrer='',endpoint='https://test-blog.goatcounter.com/coun
   const scripts=[];
   const document={
     currentScript:{dataset:{analyticsHost:'yuyaxiong.github.io',analyticsEndpoint:endpoint}},
-    referrer,querySelector:()=>scripts.length?scripts[0]:null,
+    referrer,querySelector:selector=>selector==='script[data-goatcounter]'&&scripts.length?scripts[0]:null,
     createElement:()=>({setAttribute(name,value){this[name]=value;}}),
     head:{appendChild:script=>scripts.push(script)}
   };
@@ -35,6 +35,7 @@ test('production visits count once and strip search terms and full referral URLs
   const {scripts,context}=visit(site.url+'/articles/?q=private-search#section',{referrer:'https://referrer.example/page?token=secret#part'});
   assert.equal(scripts.length,1);
   assert.equal(scripts[0].async,true);
+  assert.equal(scripts[0].src,'/assets/goatcounter-count.js');
   assert.equal(scripts[0].referrerPolicy,'origin');
   assert.equal(context.window.goatcounter.path(),'/articles/');
   assert.equal(context.window.goatcounter.referrer(),'https://referrer.example');
@@ -46,4 +47,33 @@ test('production visits count once and strip search terms and full referral URLs
 test('privacy text matches whether analytics is enabled',()=>{
   assert(analyticsPrivacy(site).includes('GoatCounter'));
   assert(!analyticsPrivacy({...site,analytics:{...site.analytics,enabled:false}}).includes('本站使用 <a'));
+});
+
+test('upstream client and loader send one query-free payload together',async()=>{
+  const upstream=await readFile(new URL('../static/assets/goatcounter-count.js',import.meta.url),'utf8');
+  const sent=[];
+  const {scripts,context}=visit(site.url+'/articles/?q=private-search#section',{referrer:'https://referrer.example/page?token=secret'});
+  context.window.goatcounter.no_onload=true;
+  context.goatcounter=context.window.goatcounter;
+  context.window.screen={width:1280};
+  context.navigator={webdriver:false,sendBeacon:url=>{sent.push(url);return true;}};
+  context.parent={location:context.location};
+  context.localStorage={getItem:()=>null};
+  context.console=console;
+  context.document.title='Test article';
+  context.document.visibilityState='visible';
+  context.document.addEventListener=()=>{};
+  context.document.removeEventListener=()=>{};
+  scripts[0].dataset={goatcounter:'https://test-blog.goatcounter.com/count'};
+  vm.runInContext(upstream,context);
+  assert.equal(sent.length,0,'upstream must not send before payload privacy filtering is installed');
+  scripts[0].onload();
+  assert.equal(sent.length,1);
+  const request=new URL(sent[0]);
+  assert.equal(request.origin,'https://test-blog.goatcounter.com');
+  assert.equal(request.searchParams.get('p'),'/articles/');
+  assert.equal(request.searchParams.get('r'),'https://referrer.example');
+  assert.equal(request.searchParams.has('q'),false);
+  assert(!sent[0].includes('private-search'));
+  assert(!sent[0].includes('token'));
 });

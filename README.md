@@ -46,8 +46,21 @@ Pages 配置：Deploy from a branch → main → /(root)。根目录 `.nojekyll`
 2. 在 GoatCounter 设置中保持统计后台非公开（Public dashboard 关闭），时区设为 Asia/Shanghai；保持逐次访问明细采集关闭。统计账号名是公开配置，不是密钥。
 3. 将 `site.json` 中的 `analytics.code` 改为实际账号名（只填 `.goatcounter.com` 前面的部分），再将 `analytics.enabled` 改为 `true`。不要使用尚未注册或不属于自己的站点名。
 4. 运行 `npm run build` 和 `npm run check`。统一模板会把统计加载入口加入全站 HTML，并同步生成隐私说明。发布时提交源文件和根目录生成文件。
-5. 部署完成后访问正式文章，在浏览器网络面板确认 `count.js` 和对应 `/count` 请求，再在自己的 GoatCounter 后台确认页面记录。后台可按页面、日期查看浏览次数、估算访客数和来源网站。只有完成请求与后台记录核验后，才能确认接入成功。
+5. 部署完成后访问正式文章，在浏览器网络面板确认 `/assets/goatcounter-count.js` 和对应 `/count` 请求，再在自己的 GoatCounter 后台确认页面记录。后台可按页面、日期查看浏览次数、估算访客数和来源网站。只有完成请求与后台记录核验后，才能确认接入成功。
 
 统计仅在 HTTPS 正式域名加载，本地和其他预览域名不计数；发送页面路径时去除查询参数与锚点，来源仅保留 origin。不会采集站内搜索词或绑定点击事件。拦截器、网络限制可能导致少计，浏览量不等于读完人数；上线前的历史访问无法补回。
 
 关闭统计：将 `analytics.enabled` 改为 `false`，重新构建、校验并发布。之后的页面不再加载统计入口，阅读、搜索、打印仍可使用；这不会删除 GoatCounter 已有数据。可在登录后的 GoatCounter 设置中排除自己的浏览，参考 https://www.goatcounter.com/help/skip-dev 。测试用例使用隔离环境，不向统计后台制造测试流量。
+
+### 统计脚本版本
+
+统计客户端按官方支持的同域托管方式随博客发布，避免单独依赖 `gc.zgo.at` 的脚本下载连接。统计请求仍发送到配置的 GoatCounter 账号。
+
+- 上游：https://github.com/arp242/goatcounter
+- 源文件：`public/count.js`
+- 固定来源版本：478f026eb9deacb9378a46b96db72e11e9f20557
+- 原始 Git blob SHA：3b5f6bc87a35c67875fd3efe52e75f8317949d85
+- SHA-256：792b7abd26c1fb6ae62906833e09a301251e2641816e69e4f95aba518f3fe3f0
+- 发布文件：`static/assets/goatcounter-count.js`；源文件未修改，保留原 ISC 许可声明。
+- 本站加载器在客户端初次计数之前清除额外的 `q` 参数，防止发送站内搜索词。更新客户端时需要重新运行包含上游客户端的请求载荷测试。
+- 官方说明：https://www.goatcounter.com/help/countjs-host
