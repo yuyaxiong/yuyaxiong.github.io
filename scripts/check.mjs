@@ -29,6 +29,11 @@ for(const file of all){
 }
 assert((await readFile(path.join(out,'robots.txt'),'utf8')).startsWith('User-agent: *\nAllow: /\n'));
 assert(posts.length>0);assert(posts.some(p=>p.slug==='ford-turnaround'));
+const cadreArticle=posts.find(p=>p.slug==='mao-selected-works-cadre-management');
+if(cadreArticle){
+  assert(!cadreArticle.html.includes('**'),'干部方法文章：加粗标记未正确渲染');
+  for(const label of ['目标层：','条件层：','方法层：','人员层：'])assert(cadreArticle.html.includes(`<strong>${label}</strong>`),`干部方法文章：${label}缺少加粗样式`);
+}
 const article=posts.find(p=>p.slug==='ford-turnaround');for(const term of ['202.13','124','87.63','97.84','621-101','Olivia S. Jung'])assert(article.body.includes(term),`缺失关键口径 ${term}`);
 for(const file of all)assert.equal(await readFile(path.join(root,path.relative(out,file)),'utf8'),await readFile(file,'utf8'),'Pages root differs from generated staging');
 console.log(`PASS: ${all.length} generated files, ${links} local links/anchors, metadata and private-content guards`);
