@@ -2,6 +2,7 @@ import {readFile,readdir} from 'node:fs/promises';
 import path from 'node:path';
 import {marked} from '../vendor/marked.mjs';
 import {esc} from './components.mjs';
+import {enhanceMarketingArticle} from './marketing-visuals.mjs';
 export async function loadPosts(root) {
   const dir=path.join(root,'content/posts');
   const files=(await readdir(dir)).filter(f=>f.endsWith('.md')).sort();
@@ -24,7 +25,7 @@ export async function loadPosts(root) {
     renderer.table=function(token){return `<div class="table-scroll" role="region" tabindex="0" aria-label="数据表格，可横向滚动">${marked.Renderer.prototype.table.call(this,token)}</div>`;};
     const html=marked.parse(m[2],{renderer});
     if(/<script|javascript:|<iframe|onerror\s*=/i.test(html))throw Error(`${file}: 不允许可执行嵌入内容`);
-    posts.push({...meta,body:m[2],html,headings,minutes:Math.max(1,Math.ceil(m[2].replace(/\s/g,'').length/420))});
+    posts.push({...meta,body:m[2],...enhanceMarketingArticle(meta.slug,html),headings,minutes:Math.max(1,Math.ceil(m[2].replace(/\s/g,'').length/420))});
   }
   return posts.sort((a,b)=>b.date.localeCompare(a.date)||a.slug.localeCompare(b.slug));
 }

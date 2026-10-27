@@ -24,6 +24,12 @@
 
 也可运行 `npm run build`、`npm run check`、`npm run preview`，它们只是上述命令的快捷方式。
 
+### 营销方法论的图示与测算
+
+营销转化文章保留完整 Markdown 正文，使用 `<!-- marketing-visual:fcb -->` 等七个具名标记插入图示。图示在 `scripts/marketing-visuals.mjs` 中生成，仅对该文章启用；不在 Markdown 中嵌入可执行脚本。样式为 `static/assets/marketing-visuals.css`，计算逻辑为 `marketing-economics.mjs`，浏览器交互为 `marketing-calculator.mjs`。模板只加载该文章声明的本地资源。
+
+修改图示时保留同段的正文与完整表格。测算输入仅在浏览器内存中使用，不保存、不发送，也不加入统计事件；关闭 JavaScript 后仍保留默认图示和原有静态算例。检查覆盖原始算例、亏损、零成交、零线索、非法参数及文章资源隔离。
+
 ## 发布与回滚
 
 Pages 配置：Deploy from a branch → main → /(root)。根目录 `.nojekyll` 避免二次处理。修正旧文章后更新 `updated`，重新构建、校验、提交。需要回滚时对有问题的提交执行 Git revert，再推送；保留历史，不强制覆盖分支。站点是用户主页，URL 根路径固定；迁移域名时需修改 `site.json` 与构建中的 URL 校验。
