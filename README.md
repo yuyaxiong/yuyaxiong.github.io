@@ -17,6 +17,7 @@
 
 1. 在 `content/posts/` 新建 `YYYY-MM-DD-short-name.md`。
 2. 使用现有文章的 JSON front matter，修改 title、slug、date、updated、author、category、tags、description。slug 使用小写英文和连字符且不可重复。`status` 为 `draft` 时不输出公开网页，但仓库本身是公开的，所以敏感草稿不要放进仓库。
+   - 内容形式标签：`外文精读` 适用于基于外文资料的解读与分析；`翻译` 仅用于具有许可或授权的实际译文，不要混用。
 3. 在第二个 `---` 后写 Markdown。文章中的二级标题会生成目录，分类、标签、RSS、站点地图自动更新。
 4. 安装 Node.js 20 或更新版本，在仓库根目录运行 `node scripts/build.mjs` 与 `node scripts/check.mjs`。无需 npm install。
 5. 预览：`python3 -m http.server 4173 --directory docs`，浏览器打开 http://localhost:4173/。

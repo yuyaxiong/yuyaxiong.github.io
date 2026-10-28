@@ -7,7 +7,8 @@
   "author": "余亚雄",
   "category": "管理思考",
   "tags": [
-    "组织管理"
+    "组织管理",
+    "外文精读"
   ],
   "description": "精读 Claude Code 团队的 Code Review 实践：六层审查、风险审批、历史事故评测、Agent 审查收敛和研发责任制。含原创中文流程图与工程落地建议。",
   "status": "published"
