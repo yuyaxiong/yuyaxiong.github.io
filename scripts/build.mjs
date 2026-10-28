@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {loadPosts} from './content.mjs';
 import {layout} from './layout.mjs';
 import {analyticsPrivacy} from './analytics.mjs';
+import {renderHomepage} from './home.mjs';
 import {esc,card,toc,articlePath,tagPath,categoryPath} from './components.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const output=path.join(root,'docs');
@@ -15,8 +16,7 @@ await rm(output,{recursive:true,force:true});await mkdir(output,{recursive:true}
 await cp(path.join(root,'static'),output,{recursive:true});
 async function page(url,meta){const f=decodeURIComponent(url.endsWith('.html')?url.slice(1):url.slice(1)+'index.html');await mkdir(path.dirname(path.join(output,f)),{recursive:true});await writeFile(path.join(output,f),layout(site,{...meta,path:url}));if(url!=='/404.html')routes.push(url);}
 const intro=(label,title,desc)=>`<div class="page-intro"><p class="eyebrow">${label}</p><h1>${title}</h1><p>${desc}</p></div>`;
-const latest=posts[0];
-await page('/',{title:site.name,description:site.description,active:'home',body:`<section class="hero"><div><p class="eyebrow">BUSINESS / SYSTEMS / NOTES</p><h1>把复杂的经营问题，<br>想清楚。</h1><p>记录商业案例、经营分析与长期思考。<br>从事实出发，追问决策如何产生结果。</p>${latest?`<a class="primary" href="${articlePath(latest)}">阅读最新文章 <span aria-hidden="true">↗</span></a>`:`<a class="primary" href="/articles/">浏览文章</a>`}</div><div class="hero-note" aria-label="本站关注的问题"><span class="note-number">01 / 经营观察</span><p>钱从哪里来？</p><p>价值在哪里产生？</p><p>组织如何一起行动？</p><span class="note-caption">用案例理解决策，用数据校准判断。</span></div></section><section class="latest"><div class="section-heading"><h2>最新笔记</h2><a href="/articles/">全部文章 <span aria-hidden="true">→</span></a></div>${latest?card(latest,true):'<p>第一篇笔记正在准备中。</p>'}</section><section class="home-about"><p class="eyebrow">关于这里</p><h2>在事实与判断之间，<br>留出思考的空间。</h2><p>好的案例不止有一个成功故事。这里关注决策背后的约束、结果中的口径，以及经验成立的边界。</p><a class="text-link" href="/about/">了解本站 →</a></section>`});
+await page('/',{title:site.name,description:site.description,active:'home',body:renderHomepage(posts)});
 await page('/articles/',{title:'全部文章',description:'按时间阅读商业案例与经营分析。',active:'articles',body:intro('ARCHIVE','全部文章',`${posts.length} 篇笔记，持续记录。`)+`<form class="search" role="search" action="/articles/"><label for="q">搜索文章</label><div><input id="q" name="q" type="search" placeholder="标题、摘要或标签" maxlength="100"><button type="submit">搜索</button></div><p id="result-count" role="status" aria-live="polite">按发布时间倒序排列</p></form><div id="post-list">${posts.map(p=>`<div data-post data-search="${esc([p.title,p.description,p.category,...p.tags].join(' ').toLowerCase())}">${card(p)}</div>`).join('')}</div><div id="empty-result" hidden><h2>没有找到相关文章</h2><p>试试“福特”“财务分析”，或清空关键词。</p><a href="/articles/">查看全部文章</a></div><noscript><p>当前显示全部文章。搜索需要启用 JavaScript；也可以通过分类与标签浏览。</p></noscript>`});
 const categories=[...new Set(posts.map(p=>p.category))],tags=[...new Set(posts.flatMap(p=>p.tags))];
 await page('/topics/',{title:'分类与标签',description:'通过主题找到感兴趣的笔记。',active:'topics',body:intro('TOPICS','分类与标签','从一个问题出发，沿着主题继续阅读。')+`<section class="topic-section"><h2>分类</h2><div class="topic-links">${categories.map(t=>`<a href="${categoryPath(t)}">${esc(t)}<span>${posts.filter(p=>p.category===t).length} 篇 →</span></a>`).join('')}</div></section><section class="topic-section"><h2>标签</h2><div class="tags large">${tags.map(t=>`<a href="${tagPath(t)}"># ${esc(t)} <small>${posts.filter(p=>p.tags.includes(t)).length}</small></a>`).join('')}</div></section>`});
