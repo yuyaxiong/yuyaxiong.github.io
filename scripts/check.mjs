@@ -59,6 +59,13 @@ if(cadreArticle){
   for(const term of ['全部历史和全部工作','后端工程师 → 模块负责人 → 项目负责人 → 团队负责人 → 业务负责人','现代管理引申','动态调整干部梯队'])assert(cadreArticle.body.includes(term),`干部方法文章：缺失关键内容 ${term}`);
   assert(cadreArticle.html.includes('<strong>检查是为了更早识别问题，既改善工作，也提高干部能力。</strong>'),'干部方法文章：关键结论加粗失败');
 }
+const home=await readFile(path.join(out,'index.html'),'utf8');
+assert(home.includes('理解 AI 时代的技术、商业与组织变革'),'首页定位缺失');
+assert(home.includes('href="/assets/home-v3.css?v=20261028-v3"'),'首页独立样式缺失');
+assert.equal((home.match(/class="home3-secondary-card"/g)||[]).length,2,'首页应有两篇次精选');
+assert(!home.includes('home-v2-')&&!home.includes('最近更新'),'旧版首页残留');
+const homeStyles=await readFile(path.join(out,'assets/home-v3.css'),'utf8');
+assert(homeStyles.includes('.home3-lead{display:grid'),'编辑型主推网格样式缺失');
 const article=posts.find(p=>p.slug==='ford-turnaround');for(const term of ['202.13','124','87.63','97.84','621-101','Olivia S. Jung'])assert(article.body.includes(term),`缺失关键口径 ${term}`);
 for(const file of all)assert.equal(await readFile(path.join(root,path.relative(out,file)),'utf8'),await readFile(file,'utf8'),'Pages root differs from generated staging');
 console.log(`PASS: ${all.length} generated files, ${links} local links/anchors, metadata and private-content guards`);

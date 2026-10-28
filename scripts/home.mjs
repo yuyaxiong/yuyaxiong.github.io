@@ -1,34 +1,38 @@
 import {esc,articlePath} from './components.mjs';
 
-// 编辑精选不随发文日期变化；新增文章默认进入「最近更新」。
+// 编辑精选不受发布时间影响。首页短标题不修改文章的真实标题。
 const PICKS=[
   {
     "slug": "anthropic-claude-code-review-system",
-    "label": "AI 技术与工程",
-    "teaser": "当 AI 写下大部分代码，研发团队该如何重新设计审查、验证与责任体系？"
+    "category": "AI 工程",
+    "title": "当 AI 写下 90% 的代码，谁来负责质量？",
+    "summary": "Anthropic 如何重构 Code Review：当代码生产不再是瓶颈，质量保障与工程责任应该如何演进。",
+    "label": "AI ENGINEERING"
   },
   {
     "slug": "k2lab-moras-platform-moat",
-    "label": "Agent 与 AI 产品",
-    "teaser": "Agent 成为交易中间层之后，平台、品牌与达人之间的价值该如何分配？"
+    "category": "Agent · 商业模式",
+    "title": "当 AI 替达人卖货，谁能留下利润？",
+    "summary": "从 K2 Lab / Moras 的案例，审视 AI 中间层的独立价值、议价权与长期护城河。",
+    "label": "AGENT / BUSINESS"
   },
   {
     "slug": "marketing-conversion-system",
-    "label": "商业模式与增长",
-    "teaser": "从消费者决策机制到渠道组合，如何构建可以测量的营销转化体系？"
+    "category": "商业增长",
+    "title": "从消费者决策到成交：搭建营销转化系统",
+    "summary": "结合 FCB、JTBD 与消费者旅程，把营销理论连接到渠道、成交和利润。",
+    "label": "GROWTH / STRATEGY"
   }
 ];
 
 export function renderHomepage(posts){
-const bySlug=new Map(posts.map(p=>[p.slug,p]));
-const chosen=PICKS.map(d=>({...d,post:bySlug.get(d.slug)})).filter(d=>d.post);
-const chosenSet=new Set(chosen.map(d=>d.slug));
-const latest=posts.filter(p=>!chosenSet.has(p.slug)).slice(0,5);
-const main=chosen[0];
-const hero=`<section class="home-v2-hero" aria-labelledby="home-v2-title"><p class="home-v2-kicker">AI · AGENT · BUSINESS · ORGANIZATION</p><h1 id="home-v2-title">理解 AI 时代的技术、商业与组织变革</h1><p class="home-v2-intro">关注 AI 技术、Agent 产品与工具、商业模式和组织管理。从原理到实践，从案例到决策，记录值得长期思考的问题。</p></section>`;
-const lead=main?`<article class="home-v2-lead"><div class="home-v2-lead-content"><p class="home-v2-type">${esc(main.label)} <span>· 重点推荐</span></p><h3><a href="${articlePath(main.post)}">${esc(main.post.title)}</a></h3><p class="home-v2-desc">${esc(main.teaser)}</p><a class="home-v2-read" href="${articlePath(main.post)}">阅读文章 <span aria-hidden="true">↗</span></a></div><div class="home-v2-visual" aria-hidden="true"><span class="home-v2-visual-caption">ENGINEERING SYSTEMS</span><div class="home-v2-visual-chain"><span>AI 生成</span><i></i><span>自动验证</span><i></i><span>风险决策</span><i></i><span>可靠交付</span></div></div></article>`:"";
-const secondary=chosen.slice(1,3).map((d,i)=>`<article class="home-v2-side"><p class="home-v2-type">${esc(d.label)} <span>· 0${i+2}</span></p><h3><a href="${articlePath(d.post)}">${esc(d.post.title)}</a></h3><p>${esc(d.teaser)}</p><a class="home-v2-side-link" href="${articlePath(d.post)}" aria-label="阅读：${esc(d.post.title)}"><span aria-hidden="true">↗</span></a></article>`).join("");
-const picks=main?`<div class="home-v2-picks">${lead}${secondary?`<div class="home-v2-secondary">${secondary}</div>`:""}</div>`:`<p class="home-v2-empty">精选文章正在整理。<a href="/articles/">浏览全部文章 ↗</a></p>`;
-const updates=latest.map(p=>`<article class="home-v2-update"><div class="home-v2-update-meta"><span>${esc(p.category)}</span><time datetime="${esc(p.date)}">${p.date.replaceAll("-",".")}</time></div><h3><a href="${articlePath(p)}">${esc(p.title)}</a></h3><a class="home-v2-update-link" href="${articlePath(p)}" aria-label="阅读：${esc(p.title)}">↗</a></article>`).join("");
-return `${hero}<section class="home-v2-featured" aria-labelledby="home-v2-featured-heading"><div class="home-v2-heading"><h2 id="home-v2-featured-heading">精选文章</h2><span>从这里开始阅读</span></div>${picks}</section><section class="home-v2-recent" aria-labelledby="home-v2-recent-heading"><div class="home-v2-heading"><h2 id="home-v2-recent-heading">最近更新</h2><a href="/articles/">全部文章 <span aria-hidden="true">↗</span></a></div><div class="home-v2-updates">${updates||'<p class="home-v2-empty">暂无更多文章。</p>'}</div><a class="home-v2-archive" href="/articles/">浏览全部文章 <span aria-hidden="true">↗</span></a></section>`;
+ const bySlug=new Map(posts.map(p=>[p.slug,p]));
+ const selected=PICKS.map(item=>({...item,post:bySlug.get(item.slug)})).filter(item=>item.post);
+ const curated=new Set(selected.map(item=>item.slug));
+ const more=posts.filter(p=>!curated.has(p.slug)).slice(0,6);
+ const top=selected[0];
+ const lead=top?`<a class="home3-lead" href="${articlePath(top.post)}" aria-label="阅读：${esc(top.post.title)}"><div class="home3-lead-main"><div class="home3-overline"><span class="home3-index">01</span><span>${esc(top.category)}</span><span class="home3-overline-muted">本期重点</span></div><h3>${esc(top.title)}</h3><p>${esc(top.summary)}</p><div class="home3-read">阅读深度解读 <span aria-hidden="true">↗</span></div></div><div class="home3-lead-aside" aria-hidden="true"><span class="home3-aside-caption">THIS STORY EXPLORES</span><p>当代码产出不再昂贵，<br>我们应该如何重新分配<br><strong>审查、判断与责任？</strong></p><span class="home3-aside-foot">${top.post.date.replaceAll("-",".")} · ${top.post.minutes} 分钟阅读</span></div></a>`:`<p class="home3-empty">精选文章正在整理。<a href="/articles/">浏览全部文章</a></p>`;
+ const secondary=selected.slice(1,3).map((item,i)=>`<a class="home3-secondary-card" href="${articlePath(item.post)}" aria-label="阅读：${esc(item.post.title)}"><div class="home3-secondary-head"><span>0${i+2} / ${esc(item.label)}</span><span class="home3-arrow" aria-hidden="true">↗</span></div><h3>${esc(item.title)}</h3><p>${esc(item.summary)}</p></a>`).join("");
+ const rows=more.map(p=>`<a class="home3-article-row" href="${articlePath(p)}" aria-label="阅读：${esc(p.title)}"><span class="home3-article-meta"><span>${esc(p.category)}</span><time datetime="${esc(p.date)}">${p.date.replaceAll("-",".")}</time></span><span class="home3-article-title">${esc(p.title)}</span><span class="home3-arrow" aria-hidden="true">↗</span></a>`).join("");
+ return `<div class="home3"><section class="home3-intro" aria-labelledby="home3-title"><p class="home3-eyebrow">AI / TECHNOLOGY / BUSINESS / ORGANIZATION</p><h1 id="home3-title">理解 AI 时代的技术、商业与组织变革</h1><p class="home3-subtitle">探索技术如何改变生产力，Agent 如何重塑产品与商业，以及组织如何适应新的竞争环境。</p></section><section class="home3-curated" aria-labelledby="home3-curated-title"><div class="home3-section-title"><h2 id="home3-curated-title">编辑精选</h2><span>SELECTED WRITING</span></div>${lead}${secondary?`<div class="home3-secondary">${secondary}</div>`:""}</section><section class="home3-more" aria-labelledby="home3-more-title"><div class="home3-section-title"><h2 id="home3-more-title">更多文章</h2><a href="/articles/">查看全部 <span aria-hidden="true">↗</span></a></div><div class="home3-article-list">${rows||'<p class="home3-empty">更多文章正在整理。</p>'}</div></section></div>`;
 }
