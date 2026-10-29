@@ -7,7 +7,7 @@
   "author": "余亚雄",
   "category": "技术",
   "tags": ["学习笔记", "大模型后训练", "知识蒸馏", "强化学习"],
-  "description": "以 arXiv 2605.12483v5 为线索，依次说明 SFT 与 FKL、RKL、rollout 来源、OPD 和 GRPO。用 token 训练过程与梯度解释差异，再讨论学生能力和方法选型。",
+  "description": "从 GRPO、SFT 与 KL 出发，补充 TML On-Policy Distillation 和 verl GKD / PG OPD：训练流程、Direct KL 与 PG 梯度、原始实验、配置及工程检查。",
   "status": "published",
   "math": true,
   "styles": ["/assets/post-training-note.css"]
@@ -133,7 +133,7 @@ loss.backward()  # 只更新学生；训练器随后执行 optimizer.step()
 
 $$
 L_R=\operatorname{KL}(q\|p)
-+=\sum_vq(v)\log\frac{q(v)}{p(v)}.
+=\sum_vq(v)\log\frac{q(v)}{p(v)}.
 $$
 
 这就是  **off-policy RKL 蒸馏** 。对应代码是：
@@ -152,7 +152,7 @@ $$
 \frac{\partial L_F}{\partial z_j}=q_j-p_j,
 \qquad
 \frac{\partial L_R}{\partial z_j}
-+=q_j\left(\log\frac{q_j}{p_j}-L_R\right).
+=q_j\left(\log\frac{q_j}{p_j}-L_R\right).
 $$
 
  **FKL：** 如果教师给某个 token 很高概率，而学生几乎不选它，$p_j$ 仍会直接推动学生提高它的概率。这通常有利于保留教师分布中的多种行为。
@@ -282,6 +282,278 @@ Llama 和代码实验也发现：原始教师迁移的结果低于直接 GRPO，
 | 标注题稀缺，且有较强教师和训练预算 | 比较教师 RL → FKL → OPD | 总算力、教师查询量及最终收益 |
 
 至少比较 SFT、FKL-only、OPD-only、FKL → OPD 和直接 GRPO。固定学生规模、题目池和解码设置，同时记录正确率、输出长度和总成本。 **用验证集决定方法，不用训练 loss 代替结果。** 
+
+## 8｜TML OPD：学生生成，教师逐 token 评分
+
+本节起补充 Thinking Machines Lab（TML）与 verl 的实践，沿用本文符号：**教师为 $p$，学生为 $q_\theta$**。Notion 配套笔记采用相反的字母约定，阅读时应按“教师 / 学生”角色对应。[Notion 学习笔记（需页面访问权限）](https://app.notion.com/p/40825b93c70580578333ed2056c4a377)
+
+### 8.1 三个维度，不能合成一个标签
+
+| 维度 | 要回答的问题 | TML 配方 | verl 常用 GKD |
+| --- | --- | --- | --- |
+| 状态来源 | 谁生成训练前缀？ | 当前学生 | 当前学生 |
+| 散度方向 | 比较哪一方向的差异？ | reverse KL | teacher-top-k forward KL |
+| 梯度实现 | 怎样更新学生？ | sampled-token 信号 + PG | 对分布损失直接反传 |
+
+**on-policy 不等于使用策略梯度；Direct KL 也不等于 forward KL。** 完整分布可用时，forward / reverse KL 都可以直接反传；PG 则需分析 reward、采样分布和 stop-gradient。TML 没有在该文实验 top-k logit 蒸馏。[TML 原文](https://thinkingmachines.ai/blog/on-policy-distillation/)、[verl OPD 文档](https://verl.readthedocs.io/en/latest/algo/opd.html)
+
+### 8.2 一次更新实际发生了什么
+
+![OPD 训练流程：学生生成，同一前缀教师评分，分为 Direct GKD 与 PG 两条更新路径，最后同步学生权重](/assets/opd-training-flow.png)
+
+1. 固定本轮 rollout 策略 $q_{\mathrm{old}}$，让学生生成回答；保存 token IDs、采样 logprob、response mask、结束原因和策略版本。
+2. 把同一条“prompt + 学生回答”送入冻结教师，做 causal teacher-forced scoring。预测第 $t$ 个 token 时只能看到 $s_t=(x,a_{<t})$，不能看到答案 token 本身。
+3. 教师可以一次并行前向评分整段。PG 只需要实际学生 token 的 logprob；top-k GKD 还需要教师 top-k IDs 和 logprobs。**教师通常不需要再生成一条自己的回答，也不参与反向传播。**
+4. 学生训练前向重新计算当前概率，按所选损失更新；排除 prompt、padding、非训练角色和服务附加的 dummy token。
+5. 同步 rollout 权重，继续采样。永久重用首次学生回答不能维持严格 on-policy。
+
+教师评分仍有计算、显存和通信成本。当前 Tinker 使用 `compute_logprobs_async` 评分；可选折扣后累积未来 KL，默认折扣为 0。[Tinker 固定版本实现](https://github.com/thinking-machines-lab/tinker-cookbook/blob/88fb643c913341279f7c7a666e1e8fbb5c6e8f63/tinker_cookbook/distillation/train_on_policy.py)
+
+### 8.3 TML 实验的数字与口径
+
+以下是 2025 年原文的结果，区别于第 7 节主线论文：
+
+| 场景 | 基线 | OPD 后 | 需要保留的条件 |
+| --- | --- | --- | --- |
+| 数学推理 | SFT-400K：AIME’24 60%；继续 RL：68% | 约 150 步到 70% | 约 77K prompts，每题 4 条；SFT-2M 的约 70% 是外推 |
+| 领域知识与行为恢复 | 70% 内部文档混合中训练后：Internal QA 36%、IF-eval 79% | QA 41%、IF-eval 83% | 用中训练前模型作行为教师，在 Tulu3 prompts 上恢复行为 |
+
+数学学生为 Qwen3-8B-Base；原文说明实际 OPD 使用 Qwen3-8B 教师，而成本比较按 32B 教师 FLOPs 计。其 9—30× 是相对特定 SFT 成本口径；另一组对照的 7—10× 更新步、50—100× 计算量不能与之混成通用加速比。[TML 实验与讨论](https://thinkingmachines.ai/blog/on-policy-distillation/)
+
+当前 cookbook 已替换模型，现行复现数字不能倒写成原始实验。OPD 能复制已有教师行为，不代表它能免费发现教师尚未掌握的新策略。这里的“密集”是每个位置有监督，也不代表每个 token 都有独立的正确性标签。[当前复现配方](https://tinker-docs.thinkingmachines.ai/cookbook/recipes/distillation/)
+
+## 9｜Direct KL 与 PG：从数值估计到梯度
+
+本节推导是本文分析。先固定前缀 $s$，假设教师冻结、师生词表对齐、概率归一化且支持集上为正；省略条件 $s$。对完整分布，前文已给出：
+
+$$
+\nabla_\theta D_F=-\sum_v p_v\nabla_\theta\log q_\theta(v),
+\qquad
+\nabla_\theta D_R
+=\sum_v q_v\left(\log\frac{q_v}{p_v}+1\right)\nabla_\theta\log q_\theta(v).
+$$
+
+因为 $\mathbb E_{q_\theta}\nabla\log q_\theta=\nabla\sum_vq_v=0$，所以 reverse KL 的局部梯度可写成：
+
+$$
+\nabla_\theta D_R
+=\mathbb E_{a\sim q_\theta}\left[
+\left(\log q_\theta(a)-\log p(a)\right)
+\nabla_\theta\log q_\theta(a)\right].
+$$
+
+### 9.1 为什么 k1 的数值无偏，直接 backward 却不对
+
+若 $a\sim q_\theta$，则 $d(a)=\log q_\theta(a)-\log p(a)$ 是 reverse KL 的无偏单样本数值估计。但固定采出的 token，对它直接求导得到：
+
+$$
+\nabla_\theta d(a)=\nabla_\theta\log q_\theta(a).
+$$
+
+教师项的导数为零，教师差异没有成为梯度权重；在正确 on-policy 固定状态期望下，这个梯度甚至为零。遗漏的正是采样分布随参数改变产生的 score-function 项。**无偏 loss 数值不保证固定样本 autograd 梯度无偏。**
+
+PG 在 rollout 更新点构造固定优势：
+
+$$
+A_t=\operatorname{sg}\left[
+\log p(a_t\mid s_t)-\log q_{\mathrm{old}}(a_t\mid s_t)
+\right],
+\qquad
+L_{\mathrm{PG}}=-\mathbb E_{\mathrm{old}}[A_t\log q_\theta(a_t\mid s_t)].
+$$
+
+其中 $\operatorname{sg}$ 是 stop-gradient。在 $\theta=\theta_{\mathrm{old}}$、固定状态、无裁剪且采样分布匹配时，PG 的期望梯度等于 Direct reverse KL 的局部梯度；surrogate 的数值本身不等于 KL。冻结教师与 detach 优势是两件事。
+
+举例：学生给某 token 0.5、教师给 0.1，优势约为 −1.61，更新倾向于压低该动作；学生给 0.1、教师给 0.3，优势约为 +1.10，倾向于提高它。单样本 log-ratio 可以为负，KL 非负说的是分布期望。仅使用 $\log p(a)$ 而不减学生 logprob，会去掉学生熵项，改变目标。
+
+### 9.2 PPO 裁剪改变了严格的等价条件
+
+$$
+\rho_t(\theta)=\frac{q_\theta(a_t\mid s_t)}{q_{\mathrm{old}}(a_t\mid s_t)},
+\qquad
+L_{\mathrm{clip}}=-\mathbb E_{\mathrm{old}}
+\left[\min\left(\rho_t A_t,
+\operatorname{clip}(\rho_t,1-\epsilon_l,1+\epsilon_h)A_t\right)\right].
+$$
+
+裁剪是有偏的稳定化机制。多次更新同一批数据、旧策略 logprob 与真实行为策略不一致，也会影响解释。单 token ratio 只修正给定状态的动作期望，不自动修正前缀分布。
+
+**版本差异：** TML 配方由 rollout logprob 构造固定优势；本次核对的 verl 从当前 `model_output["log_probs"]` 与教师 logprob 算差值，detach 后进入 PG，`old_log_probs` 用于 ratio。初始同步点一致，同批多步更新时不能称为完全相同的实现。[verl 固定版本 PG 分支](https://github.com/verl-project/verl/blob/a08ea02a784d7d4982b1d81df36d188a476192bb/verl/trainer/distillation/losses.py)
+
+### 9.3 k1、k2、k3 不能只看“都在算 KL”
+
+令 $d=\log q_\theta(a)-\log p(a)$，$a\sim q_\theta$，暂不考虑 clamp：
+
+$$
+k_1=d,\qquad k_2=\tfrac12d^2,\qquad k_3=e^{-d}+d-1.
+$$
+
+| 估计器 | 前向期望 | 固定样本直接求导的期望 |
+| --- | --- | --- |
+| k1 | reverse KL | 0，缺失教师权重 |
+| k2 | 一般不是 KL | 固定状态 reverse-KL 梯度 |
+| k3 | reverse KL | 固定状态 forward-KL 梯度 |
+
+k2 的固定样本导数是 $d\nabla\log q$；k3 是 $(1-p/q)\nabla\log q$。后者取学生期望后等于 $-\sum_vp_v\nabla\log q_v$。这些是归一化与支持集假设下的代数结果，不是“k3 总比 k1 好”的经验排名。把 k3 detach 当 PG reward 也一般不等于 k1 PG。
+
+verl 通用 KL 工具中的带 `+` 名称，不代表蒸馏注册表接受相同字符串；例如不能未经检查就给 OPD 写 `k3+`。实际 clamp 会进一步改变理想梯度。[KL 工具源码](https://github.com/verl-project/verl/blob/a08ea02a784d7d4982b1d81df36d188a476192bb/verl/trainer/ppo/core_algos.py)
+
+### 9.4 局部匹配与完整序列目标
+
+设固定时域为 $H$，$\ell_t=\log q_\theta(a_t\mid s_t)-\log p(a_t\mid s_t)$。完整序列 reverse KL 的梯度可以改写成因果形式：
+
+$$
+\nabla_\theta J_{\mathrm{seq}}
+=\mathbb E_{Q_\theta}\left[
+\sum_{u=1}^{H}\nabla_\theta\log q_\theta(a_u\mid s_u)
+\sum_{t=u}^{H}\ell_t\right].
+$$
+
+因此完整梯度要求第 $u$ 个动作承担未来的 log-ratio 代价。**TML 的 $\gamma=0$ 只优化即时 token，是有实证依据的局部选择，不是完整序列梯度的无偏估计。** Direct GKD 固定 rollout 前缀后反传也忽略状态分布梯度。不断重新采样改善访问状态，并不会在一次 backward 内补齐这一项。
+
+真实变长序列还需定义 EOS、截断尾部及长度权重。逐条按长度平均与全 batch 按有效 token 平均并非同一目标；对未结束片段累加未来回报时，还需处理截断或 bootstrap。
+
+## 10｜verl GKD OPD 与 PG OPD 的配置
+
+### 10.1 teacher-top-k 的 Direct GKD
+
+令 $T_k$ 是教师 top-k 集合。使用完整 softmax 下的原始概率，**不在 top-k 内重新归一化**：
+
+$$
+\widetilde D_F^{(k)}(s)
+=\sum_{v\in T_k}p_v\log\frac{p_v}{q_v}.
+$$
+
+缺失尾部后，这个和不一定非负。`forward_kl_topk` 在每个位置汇总 top-k 后执行 `clamp_min(0)`，负值位置的梯度会被丢弃。未裁剪时，若 $M_p=\sum_{v\in T_k}p_v$，其 logit 梯度为：
+
+$$
+\frac{\partial\widetilde D_F^{(k)}}{\partial z_j}
+=M_pq_j-\mathbf1\{j\in T_k\}p_j.
+$$
+
+未采样的教师 top-k 候选也能得到直接监督；softmax 耦合还会影响其他 logits，但无法恢复尾部逐 token 标签。
+
+`forward_kl_topk_tail` 把未选 token 合为一个 tail 类。令 $M_q=\sum_{v\in T_k}q_v$：
+
+$$
+D_{\mathrm{coarse}}^{(k)}
+=\sum_{v\in T_k}p_v\log\frac{p_v}{q_v}
++(1-M_p)\log\frac{1-M_p}{1-M_q}.
+$$
+
+这是真正的粗粒化 forward KL，也是 full forward KL 的下界；不知道 tail 内部如何分配。当前实现要求 `log_prob_min_clamp: null`，fused 后端需提供可微 `student_mass`，否则会拒绝执行。[固定版本损失与 tail 分支](https://github.com/verl-project/verl/blob/a08ea02a784d7d4982b1d81df36d188a476192bb/verl/trainer/distillation/losses.py)
+
+### 10.2 纯 OPD 的公共配置片段
+
+以下是 **合并到完整训练配置的片段**，不是可以直接运行的启动命令；数据、学生模型、训练后端与资源仍需配置。数值是解释性基线，未做 GPU 训练验证。
+
+```yaml
+distillation:
+  enabled: true
+  nnodes: 1
+  n_gpus_per_node: 2
+  teacher_models:
+    teacher_model:
+      model_path: Qwen/Qwen3-32B
+      inference:
+        name: vllm
+        tensor_model_parallel_size: 2
+        gpu_memory_utilization: 0.8
+  distillation_loss:
+    use_task_rewards: false
+    loss_max_clamp: null
+    log_prob_min_clamp: null
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+  rollout:
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+
+algorithm:
+  use_kl_in_reward: false
+```
+
+师生需共享 tokenizer / vocab；教师显存、TP/DP/PP 与副本数必须匹配。上下文需覆盖 prompt + response 及服务要求的额外位置。`top_k: -1` 按该后端的“关闭截断”约定使用，换后端须核对；示例 GPU 数不构成容量承诺。
+
+在公共配置上深度合并下面 **一种** 覆盖，不要把多个同名 YAML 顶层键简单拼接。
+
+GKD：
+
+```yaml
+distillation:
+  distillation_loss:
+    loss_mode: forward_kl_topk
+    topk: 128
+    use_policy_gradient: false
+```
+
+tail 模式可改为 `loss_mode: forward_kl_topk_tail`，并保留 `log_prob_min_clamp: null`，设置 `tail_mass_eps: 1.0e-6`；先检查后端可微 mass 支持。
+
+PG：
+
+```yaml
+distillation:
+  distillation_loss:
+    loss_mode: k1
+    use_policy_gradient: true
+    policy_loss_mode: vanilla
+    clip_ratio: 0.2
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.2
+```
+
+本次固定版本默认是 `k3`、`use_policy_gradient: false`、`use_task_rewards: true`，所以默认配置不是 TML k1 PG。`k1` 直接反传会被校验拒绝；本路径当前只支持 `policy_loss_mode: vanilla`。[固定配置](https://github.com/verl-project/verl/blob/a08ea02a784d7d4982b1d81df36d188a476192bb/verl/trainer/config/distillation/distillation.yaml)、[官方配置解释](https://verl.readthedocs.io/en/latest/algo/opd.html)
+
+不要把整个位点的 top-k KL 当成 sampled-token PG reward。这个标量不能告诉 PG 当前动作应奖励还是惩罚，也无法直接使用非采样候选的教师标签。若加入任务奖励，分别记录 task loss、distillation loss 与系数，防止重复叠加同方向 KL。
+
+### 10.3 为什么不需要每轮扫描 temperature / top-k
+
+学生生成温度与截断决定真实行为策略；蒸馏温度决定比较的软分布；教师返回 top-k 决定监督载荷。这三者不同。
+
+若按行为分布 $b$ 采样，却用基础 softmax $q_\theta$ 的 logprob 套用无偏 reverse-KL 结论，通常不成立。应把目标也定义为 $b$，或做正确修正。硬 top-k 产生零概率，普通重要性采样不能恢复被完全截去的支持；单 token ratio 仍不能解决前缀失配。
+
+建议先用温度 1、无生成截断的明确定义基线，再按验证集调整探索。这不是通用最优超参。教师只做评分时，“教师生成温度”没有单独意义，需核实评分接口对 logits 的缩放。
+
+## 11｜工程落地、观测与最小测试
+
+### 11.1 怎样选择第一条实验路线
+
+| 约束 / 目标 | 优先比较 | 首要风险 |
+| --- | --- | --- |
+| 教师仅提供给定 token 的 logprob | k1 PG | 概率口径、方差、clip 与策略陈旧 |
+| 教师提供 top-k，希望监督未采样候选 | Direct GKD，支持时比较 tail | top-k 质量覆盖、负值裁剪、后端能力 |
+| 教师 full logits 可用，做理论对照 | full forward / reverse KL | 内存与通信 |
+| 学生很少访问有效推理路径 | 覆盖性 SFT 后再比较 OPD | 初始化与可探索支持不足 |
+| 希望超过教师或改善外部任务奖励 | verifier / GRPO 与 OPD 对照或联合 | 教师偏差、奖励冲突、成本归因 |
+
+固定 SFT 初始化、prompt 划分、有效 token 预算和评测解码设置，比较 k1 PG、GKD 与 SFT。再按资源加入 tail、任务奖励、多随机种子；不要跨方法比较 loss 绝对值来排名。
+
+### 11.2 训练数据与服务契约
+
+每条 rollout 应能追溯：`run_id`、`sample_id`、输入 / 输出 token IDs、response mask、旧策略 logprob、行为采样配置、学生 / 教师 checkpoint、tokenizer / chat-template 版本、EOS / 截断原因。top-k 路径另存教师 token IDs 与原始 logprobs，并验证索引与词表一致。
+
+教师超时只重试评分，按“样本 + 教师版本 + 评分配置”缓存，避免重试时悄悄生成另一条回答。缺失 token 分数、NaN、空有效 mask、上下文超限应明确失败或隔离，不能伪造为零分。checkpoint、优化器与 rollout 权重版本一起恢复，避免断点续训混用陈旧策略。
+
+### 11.3 观测项与验收点
+
+- **数据链路：** 首个 response token 的 causal shift；prompt / padding mask；空回答、EOS、超长截断、特殊 token；教师返回顺序与 IDs 对齐。
+- **梯度：** $p=q$ 时 full KL 与梯度接近零；用大量采样验证 k1 PG 梯度接近 full reverse KL；直接 k1 backward 应暴露差异；k 等于词表大小时恢复 full forward KL。
+- **top-k：** 记录 teacher / student mass、tail mass、负值位置比例；检查 tail 粗粒化 KL 非负和 fused mass 梯度；不能通过 clamp 掩盖索引错误。
+- **PG：** 记录 log-ratio 分位数、ratio、clip fraction、策略版本差和优势尺度；区分任务与蒸馏两份损失。
+- **成本：** rollout / 教师评分 / 更新耗时、有效 token、吞吐、截断率、GPU-hours 和费用。教师查询成本应进入总账。
+- **结果：** 独立验证集正确率、格式与指令遵循、长度、域外退化及不确定性；训练 KL 下降不能代替业务收益。
+
+这些是建议的训练验收用例，本文未实际运行模型训练。后续可优先做同预算 PG / GKD / tail 对照，再研究未来回报、混合 task reward 与多教师；先固定版本和基础数据链路。
+
+### 11.4 来源版本与同步说明
+
+本次核对日期：2026-10-29。TML 指 2025 年原始博客，现行 cookbook 与 verl 的代码核对分别固定到 `88fb643c913341279f7c7a666e1e8fbb5c6e8f63`、`a08ea02a784d7d4982b1d81df36d188a476192bb`，避免 `main` 后续变化导致配置歧义。第 9 节梯度推导、选型表与测试清单是本文整理分析。
+
+本次在原 GRPO/OPD 文章中增加专题，保留原论文主线与实验；同步更新原 Notion 页面。两处章节编号和符号各自沿用原文，数学结论按角色对应。
+
 
 ## 附录｜序列梯度与奖励目标的边界
 
