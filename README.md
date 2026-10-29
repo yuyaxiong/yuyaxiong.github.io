@@ -25,6 +25,10 @@
 
 也可运行 `npm run build`、`npm run check`、`npm run preview`，它们只是上述命令的快捷方式。
 
+### 技术文章的数学公式
+
+文章元数据设置 `"math": true` 后，支持 `$...$` 行内公式和独占行的 `$$` 块级公式。构建时使用 vendored KaTeX 0.16.22 输出原生 MathML，浏览器无需加载公式脚本或外部字体；无效公式会阻止构建。阅读需使用支持 MathML 的现代浏览器。可用 `styles` 数组声明 `/assets/` 下的本地 CSS；已有文章默认不启用数学解析。KaTeX 的 MIT 许可见 `vendor/LICENSE-katex.txt`，固定上游包为 `https://registry.npmjs.org/katex/-/katex-0.16.22.tgz`。数学排版与文章资源隔离测试包含在 `npm run check` 中。
+
 ### 营销方法论的图示与测算
 
 营销转化文章保留完整 Markdown 正文，使用 `<!-- marketing-visual:fcb -->` 等七个具名标记插入图示。图示在 `scripts/marketing-visuals.mjs` 中生成，仅对该文章启用；不在 Markdown 中嵌入可执行脚本。样式为 `static/assets/marketing-visuals.css`，计算逻辑为 `marketing-economics.mjs`，浏览器交互为 `marketing-calculator.mjs`。模板只加载该文章声明的本地资源。
@@ -71,3 +75,4 @@ Pages 配置：Deploy from a branch → main → /(root)。根目录 `.nojekyll`
 - 发布文件：`static/assets/goatcounter-count.js`；源文件未修改，保留原 ISC 许可声明。
 - 本站加载器在客户端初次计数之前清除额外的 `q` 参数，防止发送站内搜索词。更新客户端时需要重新运行包含上游客户端的请求载荷测试。
 - 官方说明：https://www.goatcounter.com/help/countjs-host
+

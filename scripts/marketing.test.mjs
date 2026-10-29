@@ -29,6 +29,7 @@ test('article visuals are scoped to the marketing article and only known markers
  assert.equal((article.html.match(/<figure class="marketing-figure"/g)||[]).length,7);
  assert(!article.html.includes('<!-- marketing-visual:'));
  assert.equal((article.html.match(/<table>/g)||[]).length,26);
- for(const other of posts.filter(p=>p!==article)){assert.equal(other.styles.length,0);assert.equal(other.scripts.length,0);assert(!other.html.includes('marketing-figure'));}
+ for(const other of posts.filter(p=>p!==article)){assert(!other.styles.includes('/assets/marketing-visuals.css'));assert(!other.scripts.includes('/assets/marketing-calculator.mjs'));assert(!other.html.includes('marketing-figure'));}
  assert.throws(()=>enhanceMarketingArticle(article.slug,'<!-- marketing-visual:unknown -->'),/未知营销图示/);
 });
+

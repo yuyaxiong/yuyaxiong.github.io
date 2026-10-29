@@ -3,6 +3,7 @@ import path from 'node:path';
 import {marked} from '../vendor/marked.mjs';
 import {esc} from './components.mjs';
 import {enhanceMarketingArticle} from './marketing-visuals.mjs';
+import {renderMathMarkdown} from './math.mjs';
 export async function loadPosts(root) {
   const dir=path.join(root,'content/posts');
   const files=(await readdir(dir)).filter(f=>f.endsWith('.md')).sort();
@@ -23,9 +24,12 @@ export async function loadPosts(root) {
     const renderer=new marked.Renderer();
     renderer.heading=function({tokens,depth}){const text=this.parser.parseInline(tokens);const id=`section-${++seq}`;headings.push({id,text:text.replace(/<[^>]*>/g,''),depth});return `<h${depth} id="${id}">${text}</h${depth}>\n`;};
     renderer.table=function(token){return `<div class="table-scroll" role="region" tabindex="0" aria-label="数据表格，可横向滚动">${marked.Renderer.prototype.table.call(this,token)}</div>`;};
-    const html=marked.parse(m[2],{renderer});
+    const html=meta.math===true?renderMathMarkdown(m[2],renderer):marked.parse(m[2],{renderer});
     if(/<script|javascript:|<iframe|onerror\s*=/i.test(html))throw Error(`${file}: 不允许可执行嵌入内容`);
-    posts.push({...meta,body:m[2],...enhanceMarketingArticle(meta.slug,html),headings,minutes:Math.max(1,Math.ceil(m[2].replace(/\s/g,'').length/420))});
+    const enhanced=enhanceMarketingArticle(meta.slug,html);
+    if(meta.styles!==undefined&&(!Array.isArray(meta.styles)||meta.styles.some(s=>typeof s!=='string'||!/^\/assets\/[a-z0-9-]+\.css$/.test(s))))throw Error(`${file}: 文章样式必须是本地 CSS 资源`);
+    posts.push({...meta,body:m[2],...enhanced,styles:[...new Set([...(meta.styles||[]),...enhanced.styles])],headings,minutes:Math.max(1,Math.ceil(m[2].replace(/\s/g,'').length/420))});
   }
   return posts.sort((a,b)=>b.date.localeCompare(a.date)||a.slug.localeCompare(b.slug));
 }
+
