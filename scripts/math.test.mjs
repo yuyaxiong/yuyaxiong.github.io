@@ -14,14 +14,15 @@ test('math is rendered at build time and code remains literal',()=>{
 test('invalid formulas fail the build rather than publishing broken notation',()=>{
  assert.throws(()=>renderMathMarkdown('$\\notARealMathCommand$'));
 });
-test('article formulas and styles are isolated from existing posts',async()=>{
+test('math-enabled articles render formulas without leaking styles to other posts',async()=>{
  const posts=await loadPosts(fileURLToPath(new URL('..',import.meta.url)));
- const note=posts.find(p=>p.slug==='sparse-to-dense-post-training');
+ for(const note of posts.filter(p=>p.math===true)){
  assert(note.html.includes('<math '));
  assert(note.styles.includes('/assets/post-training-note.css'));
  assert(!note.html.includes('katex-error'));
  assert(!note.html.replace(/<pre>[\s\S]*?<\/pre>/g,'').includes('**'),'Markdown emphasis should not remain literal');
- for(const p of posts.filter(p=>p!==note))assert(!p.styles.includes('/assets/post-training-note.css'));
+ }
+ for(const p of posts.filter(p=>p.math!==true))assert(!p.styles.includes('/assets/post-training-note.css'));
 });
 test('fixed-prefix FKL and RKL logit gradients match finite differences',()=>{
  const p=[.7,.2,.1],z=[-.8,.2,.4];
