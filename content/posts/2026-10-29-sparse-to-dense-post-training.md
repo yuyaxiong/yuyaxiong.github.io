@@ -1,283 +1,224 @@
 ---
 {
-  "title": "从 GRPO 到 On-Policy Distillation：稀疏奖励、密集蒸馏与策略投影",
+  "title": "从 GRPO 到 OPD：理清 SFT、KL 与蒸馏的关系",
   "slug": "sparse-to-dense-post-training",
   "date": "2026-10-29",
   "updated": "2026-10-29",
   "author": "余亚雄",
   "category": "技术",
   "tags": ["学习笔记", "大模型后训练", "知识蒸馏", "强化学习"],
-  "description": "精读 arXiv 2605.12483v5：先用稀疏奖励改善教师，再用 FKL 与 OPD 迁移到学生。厘清 rollout、KL 方向、token 训练、梯度及容量约束，区分论文实证与工程推导。",
+  "description": "以 arXiv 2605.12483v5 为线索，依次说明 SFT 与 FKL、RKL、rollout 来源、OPD 和 GRPO。用 token 训练过程与梯度解释差异，再讨论学生能力和方法选型。",
   "status": "published",
   "math": true,
   "styles": ["/assets/post-training-note.css"]
 }
 ---
 
-## 00｜太长不看版
+## 1｜论文主线：先改善教师，再训练学生
 
- **当可验证的训练题目比算力更稀缺时，先让更有探索能力的教师从稀疏奖励中发现好策略，再把它转成学生能够学习的密集监督。**  这是本文主线论文的经验原则，而不是新发明一种 KL 或宣称蒸馏普遍替代 RL。
+这篇论文研究一个资源分配问题： **可验证的训练题目有限，应该先训练教师，还是直接训练部署用的学生？** 
 
--  **方案：** 教师 GRPO → 教师轨迹上的 Forward KL 预热 → 学生轨迹上的 On-Policy Distillation（OPD）→ 可选的学生 GRPO。
--  **结果：** 同为 Qwen3-1.7B 学生，RL 后的 8B 教师加两阶段蒸馏，在 MATH-500 上达到 79.3%，直接学生 GRPO 为 75.9%；比较固定标注数据， **没有固定总算力** 。
--  **概念：** SFT 是训练方式，FKL/RKL 是分布损失，on/off-policy 描述训练数据与当前学生策略的关系。本文论文中的 OPD 特指学生 rollout 上的 RKL；广义 on-policy 蒸馏也可以使用其他损失。
--  **边界：** 密集反馈不等于逐 token 的正确性证明；KL 最优不等于任务奖励最优；学生暂时答不对也不代表 RKL 必然学不到。
+数学答案和代码测试可以给整条回答打分。这是 **稀疏奖励** 。它能判断结果，但通常不直接指出哪一步出错。
 
-本文适合希望把后训练概念连接到实现的读者。原论文为 Xu、Sang 等人的 [Beyond GRPO and On-Policy Distillation](https://arxiv.org/abs/2605.12483v5)，以下实验均核对  **v5（2026-10-12）** 。第 1—2 节整理论文；第 3—7 节补充概念、数学推导和工程解释，不把这些延伸冒充论文实验结论。
+教师还可以在每个前缀上给出下一个 token 的概率分布。这是 **密集监督** 。它提供的反馈更频繁，但不是逐步正确性的证明。
 
-## 01｜论文问的不是“哪个算法最好”，而是“数据先给谁”
-
-在数学和代码任务中，可以通过标准答案或测试用例给整条回答打分。这种 **序列级稀疏奖励** 能告诉模型答案是否正确，却不直接标出数千个 token 中哪一步应当改。
-
-如果学生很少采样到高质量解答，直接 RL 会面临探索与信用分配困难。较强教师可能更容易利用同一组题目找到有效行为；随后，冻结教师，在每个前缀提供 next-token 分布，就能把昂贵的探索结果转成可重复查询的 **密集监督** 。这里的“密集”是反馈位置更密集，不保证每个位置都提供独立、正确的推理知识。
-
-论文将这种分工落实为四个阶段。下面的顺序很重要：先改善监督来源，再解决学生的学习入口，最后处理学生自己的分布。
+论文提出以下训练顺序。
 
 <figure class="pt-figure">
-<strong>图 1｜从策略发现到部署压缩</strong>
+<strong>图 1｜先用奖励改善教师，再把教师行为迁移给学生</strong>
 <ol class="pt-flow">
-<li><b>教师 RL：发现好策略</b><span>较强教师生成答案；verifier 给序列奖励；GRPO 更新教师。</span></li>
-<li><b>FKL 预热：建立覆盖</b><span>冻结教师；教师生成轨迹；学生在相同前缀匹配教师分布。</span></li>
-<li><b>OPD：纠正自身轨迹</b><span>当前学生生成轨迹；教师评价学生前缀；RKL 更新学生。</span></li>
-<li><b>学生 RL：可选再探索</b><span>用此前留出的标注题目，在已经改善的学生上继续 GRPO。</span></li>
+<li><b>教师 GRPO</b><span>用任务奖励提高教师的解题能力。</span></li>
+<li><b>FKL 预热</b><span>教师生成回答。学生在这些前缀上学习教师分布。</span></li>
+<li><b>OPD</b><span>学生生成回答。教师在学生前缀上提供分布。</span></li>
+<li><b>学生 GRPO，可选</b><span>用此前留出的新题继续训练学生。</span></li>
 </ol>
-<figcaption>根据原论文第 2 节重新绘制。箭头顺序为 01 → 02 → 03 → 04；第 4 阶段可省略。教师 logits 是对前缀的条件分布，不是另写一份“正确答案”。</figcaption>
+<figcaption>按 01 → 02 → 03 → 04 执行。根据原论文第 2 节重绘。迁移阶段冻结教师，只更新学生。</figcaption>
 </figure>
 
-论文用两个条件解释桥接过程： **C1，教师在目标奖励上足够好；C2，教师与学生在应用 OPD 的区域有足够的有效概率覆盖重叠。**  教师 RL 服务 C1，FKL 预热改善 C2，OPD 则把监督移到学生实际访问的前缀。这里的“覆盖不足”通常指有效概率质量不足；普通 softmax 的 token 概率一般并非严格为零。
+这套顺序包含两个判断：教师要在目标任务上足够好，学生也要具备学习这些行为的基础。教师 GRPO 改善前者。FKL 预热帮助学生接触教师常用的 token 和前缀。OPD 再处理学生自己生成时出现的问题。
 
-这是一个在可验证数学、代码任务中的分阶段经验原则。它不证明所有任务必须先训练更大教师，也不意味着不经 RL 的教师没有蒸馏价值。[原文第 2—3 节](https://arxiv.org/html/2605.12483v5#S2)
+论文结果见第 7 节。先把几个容易混淆的概念拆开，才能理解这套流程。[原论文 v5，第 2—3 节](https://arxiv.org/html/2605.12483v5#S2)
 
-## 02｜实验支持什么，又没有支持什么
+## 2｜概念关系：损失和 rollout 来源是两回事
 
-先看最直接的对照：部署学生固定为 Qwen3-1.7B，教师固定为 8B。下表取自原论文表 1、表 2 的完整 DAPO 数据设置， **均未追加 Stage 3 学生 RL** 。
+ **rollout**  指模型根据输入逐 token 生成的一条回答。 **前缀** 指输入加上此前已生成的 token。
 
-| 学生训练路线 | MATH-500 | AIME 2024 | AIME 2025 |
-| --- | --- | --- | --- |
-| 直接学生 GRPO | 75.9 ± 0.9 | 19.8 ± 1.4 | 17.1 ± 0.9 |
-| 原始 8B 教师 → FKL + OPD | 71.5 ± 0.9 | 15.0 ± 1.5 | 10.6 ± 1.2 |
-| RL 后 8B 教师 → 仅 OPD | 77.6 ± 0.8 | 23.0 ± 1.4 | 18.9 ± 1.4 |
-| RL 后 8B 教师 → teacher-sample SFT | 76.0 ± 0.9 | 22.4 ± 1.5 | 19.4 ± 1.4 |
-|  **RL 后 8B 教师 → FKL + OPD**  |  **79.3 ± 0.7**  |  **25.2 ± 1.6**  |  **20.2 ± 1.3**  |
+这些术语描述不同的事情：
 
-单位为百分比。 **avg@16**  是每题独立生成 16 次，先求该题平均正确率，再对题目平均；不是 pass@16，也不是多数投票。± 是跨评测题目的标准误， **不是多次独立训练的波动** 。
-
-为直观看到量级，下图仅摘出 MATH-500 的四条路线；零起点避免夸大差异，精确数据与误差见上表。
-
-<figure class="pt-figure">
-<strong>图 2｜固定学生，改变监督来源与桥接方式</strong>
-<div class="pt-bars" role="img" aria-label="MATH-500 平均正确率：原始教师桥接 71.5，直接学生 GRPO 75.9，RL 教师仅 OPD 77.6，RL 教师 FKL 加 OPD 79.3；横轴从 0 到 100%。">
-<div class="pt-bar"><span>原始教师 → 桥接</span><div class="pt-track"><div class="pt-fill" style="width:71.5%"></div></div><b>71.5</b></div>
-<div class="pt-bar"><span>直接学生 GRPO</span><div class="pt-track"><div class="pt-fill" style="width:75.9%"></div></div><b>75.9</b></div>
-<div class="pt-bar"><span>RL 教师 → 仅 OPD</span><div class="pt-track"><div class="pt-fill" style="width:77.6%"></div></div><b>77.6</b></div>
-<div class="pt-bar"><span>RL 教师 → 完整桥接</span><div class="pt-track"><div class="pt-fill best" style="width:79.3%"></div></div><b>79.3</b></div>
-</div>
-<figcaption>根据表 1、表 2 重绘，横轴为正确率 0—100%。本文没有根据标准误另行宣称统计显著性。</figcaption>
-</figure>
-
-合理读法有四点：
-
-1.  **教师质量不能用参数量代替。** 同一个 8B 教师，RL 前后桥接端点相差 7.8 个百分点；本设置中，原始教师桥接甚至低于直接学生 GRPO。Llama 与代码实验也复现了“原始教师迁移 < 直接 GRPO < RL 教师迁移”的端点排序。
-2.  **FKL 预热有效，但 OPD 冷启动并没有失效。** 77.6 → 79.3 是预热增加的 1.7 个百分点；77.6 本身已高于直接 GRPO。不能把“初始差距大更难学”写成“学生不会答对就不能做 RKL”。
-3.  **不要过度解释消融。** 论文的“无 OPD”行标为 teacher-sample SFT，并非明确的“保留完全相同 FKL 预热、只删后续 OPD”对照。因此 79.3 − 76.0 = 3.3 更稳妥地表述为完整桥接相对该单阶段迁移基线的增益，不是独立、可相加的 OPD 因果贡献。
-4.  **学生 RL 仍有价值，但实验分组不同。** 另一个半数据实验中，8B 教师路线只用前半数据完成桥接，MATH 为 75.4%；再用后半新题做学生 GRPO 达到 78.5%，而重用前半题的匹配更新对照为 75.7%。不能把 +3.1 直接加到完整数据的 79.3 上。
-
-还有一个重要成本边界：附录 F 报告直接学生 GRPO 约 50.2 H200 GPU 小时，8B 教师优先路线约为其  **4 倍算力** ，另有教师 rollout 与 logits 查询开销。它支持的是 **稀缺标注数据的分配收益** ，不是“同等总算力下必胜”，更不是“最省钱”。[原论文表 1—4、附录 F](https://arxiv.org/html/2605.12483v5#S4)
-
-## 03｜拆开三个维度：前缀从哪来、目标是什么、损失朝哪边
-
-设输入为 $x$，回答为 $y=(y_1,\ldots,y_T)$，第 $t$ 步前缀为 $s_t=(x,y_{<t})$。固定同一前缀 $s$，记教师 next-token 分布为 $p(v)=\pi_T(v\mid s)$，学生为 $q(v)=\pi_\theta(v\mid s)$，$v$ 遍历共享词表 $V$。
-
-“蒸馏”是把教师行为迁移给学生的任务；“on-policy”描述学生是否在自己当前策略产生的轨迹上学习；FKL/RKL 则描述条件分布之间的损失方向。三者不能互换。
-
-| 前缀 / rollout 来源 | 训练目标 | 相对学生的分类 |
+| 术语 | 含义 | 决定什么 |
 | --- | --- | --- |
-| 固定人工答案或教师答案 | 硬标签交叉熵 | 常见离线 SFT；教师答案时也是序列蒸馏 |
-| 教师 rollout | FKL：KL(教师 ∥ 学生) | off-policy FKL 蒸馏 |
-| 教师 rollout | RKL：KL(学生 ∥ 教师) |  **off-policy RKL 蒸馏**  |
-| 当前学生 rollout | FKL 或其他分布损失 | on-policy 蒸馏；不等于本文论文的特定 OPD 配方 |
-| 当前学生 rollout | RKL | 本文论文称为 OPD |
-| 近期学生 rollout | verifier 奖励、组内优势及裁剪目标 | GRPO；属于策略优化而非教师分布匹配 |
+| 蒸馏 | 把教师的行为迁移给学生 | 学习谁 |
+| SFT | 根据给定目标文本做监督训练 | 用什么文本训练 |
+| FKL / RKL | 教师分布与学生分布之间的两种 KL 方向 | 怎样计算差异 |
+| off-policy / on-policy | 训练轨迹与当前学生策略的关系 | 在谁生成的前缀上学习 |
+| OPD | 在当前学生生成的轨迹上，用教师反馈训练学生 | 蒸馏的一种训练流程 |
+| GRPO | 对同题多条回答的奖励做组内比较，再更新策略 | 怎样利用任务奖励 |
 
- **所以，把教师轨迹上的 FKL 换成 RKL，得到的是 off-policy RKL，不会自动变成 OPD。** 即使 RKL 内部按学生概率对词表加权，外部访问的前缀仍然来自教师。
+这里的 on-policy 和 off-policy 都相对当前学生。判断蒸馏方式时，先分开问两件事： **谁生成回答？用哪种损失？** 
 
-同理，“来自学生”也需要时间限定：很久以前的学生轨迹，相对当前策略已经存在分布差异。近期策略采样、若干轮更新是常见近似；大量旧轨迹重放不能只凭模型名字仍叫 student 就视为严格 on-policy。若使用温度、top-p 等改变行为分布，也要记录实际采样策略。[GKD 原论文](https://arxiv.org/abs/2306.13649)、[Thinking Machines 的 OPD 实现说明](https://thinkingmachines.ai/blog/on-policy-distillation/)
+| rollout 来源 | 使用 FKL | 使用 RKL |
+| --- | --- | --- |
+| 教师 | off-policy FKL 蒸馏 |  **off-policy RKL 蒸馏**  |
+| 当前学生 | on-policy FKL 蒸馏 | 本文论文使用的  **OPD**  |
 
-### SFT 与 FKL：有关联，但不能无条件画等号
+因此， **RKL 不等于 OPD** 。教师生成回答后，即使把损失改成 RKL，训练仍是 off-policy。
 
-普通 SFT 对一个目标 token $a$ 的损失为 $-\log q(a)$，也就是把目标看成 one-hot 分布。软标签 FKL 则为：
+广义 OPD 可以使用其他分布损失。主线论文把 OPD 特指为“学生 rollout + RKL”。[GKD 论文](https://arxiv.org/abs/2306.13649)提供了更一般的框架。
+
+还要注意“当前”二字。旧学生生成的轨迹，相对更新后的学生已经有分布差异。缓存与重放需要记录采样策略，不能只看生成模型是否叫 student。
+
+## 3｜SFT 与 FKL：学一个 token，还是学完整分布
+
+固定一个前缀 $s$。设教师分布为 $p(v)$，学生分布为 $q(v)$，$v$ 遍历共享词表 $V$。
+
+### 3.1 SFT 使用给定的目标 token
+
+目标 token 为 $a$ 时，SFT 的损失是：
+
+$$
+L_{\mathrm{SFT}}=-\log q(a).
+$$
+
+它要求学生提高 $a$ 的概率。这个目标可以来自人工答案，也可以来自教师生成的答案。
+
+### 3.2 FKL 使用教师的完整概率分布
+
+本文的 FKL 指 $\operatorname{KL}(p\|q)$：
 
 $$
 L_F=\sum_{v\in V}p(v)\log\frac{p(v)}{q(v)}
 =H(p,q)-H(p).
 $$
 
-$H(p,q)=-\sum_v p(v)\log q(v)$ 是交叉熵，$H(p)$ 是固定教师的熵；优化学生时两者梯度相同。如果 $a$  **确实从同一个教师条件分布 $p$ 采样** ，那么硬标签损失的期望就是 $H(p,q)$。
+$H(p,q)=-\sum_vp(v)\log q(v)$ 是交叉熵。教师固定时，$H(p)$ 不随学生变化。因此，优化 FKL 与优化这个软标签交叉熵的梯度相同。
 
-因此，按教师真实分布采样的序列 SFT，可以视为相应教师轨迹 FKL 交叉熵项的 Monte Carlo 估计。但一条固定答案不是完整软分布；greedy 解码、筛选正确解、改温度或 top-p 后，目标数据分布也随之改变。人工 SFT 更不能直接等同于某个教师的 FKL。
+如果目标 token $a$ 从教师分布 $p$ 中采样，那么 SFT 损失的期望就是 $H(p,q)$。这说明两者有关联。
 
-## 04｜教师给出 10 个 token 和 logits，学生究竟怎么训练
+但一条固定答案不能提供完整分布。使用 greedy 解码、筛选正确答案或改变采样温度，也会改变文本的来源分布。因此，不能把任意 SFT 都称为教师 FKL。
 
-假设 teacher/student 共享 tokenizer、词表索引和聊天模板。教师针对同一个 prompt 生成 $y_1,\ldots,y_{10}$，并保留每个生成位置在 **采样前** 的全词表 logits。这里每个位置有 $|V|$ 个数，不是只有被选中 token 的一个 logit。
+### 3.3 教师生成 10 个 token 后，学生怎样计算 FKL
 
-1. 把 `prompt + 教师 response` 输入学生，用  **teacher forcing**  前向计算。学生不必先自行生成这 10 个 token；有因果 mask 的 Transformer 可以一次计算所有位置。
-2. 对齐预测：预测 $y_1$ 的学生分布来自 prompt 最后一个位置；预测 $y_t$ 的分布来自前缀 $(x,y_{<t})$，不是已经看见 $y_t$ 的位置。
-3. 教师和学生都在 **完全相同的前缀** 上产生分布。用温度 $\tau>0$ 得到 $p_t=\operatorname{softmax}(z_t^T/\tau)$、$q_t=\operatorname{softmax}(z_t^S/\tau)$，然后逐位置计算 KL。
-4. 只在有效 response 预测位置聚合损失，屏蔽 prompt、padding 和截断后的无效位置；EOS 是否参与要固定协议。教师冻结，梯度只更新学生。
+假设教师和学生使用相同 tokenizer、词表索引和输入模板。教师生成 $y_1,\ldots,y_{10}$。logits 是 softmax 之前的模型分数。每个位置保存一组 **采样前的全词表 logits** ，共 $10\times|V|$ 个数。
 
-令 $m_{bt}\in\{0,1\}$ 表示 batch 中第 $b$ 条样本、第 $t$ 个预测位置是否计入，常见 token 平均损失为：
+学生不需要先生成同一份答案。把“输入 + 教师回答”送入学生，一次计算各位置的预测。训练时固定使用教师写出的前缀，这叫 teacher forcing。
 
-$$
-L=\frac{\tau^2}{\sum_{b,t}m_{bt}}
-\sum_{b,t}m_{bt}\operatorname{KL}(p_{bt}\|q_{bt}).
-$$
+| 预测目标 | 两个模型看到的相同前缀 | 比较的分布 |
+| --- | --- | --- |
+| 第 1 个 token | 输入 $x$ | $p_1$ 与 $q_1$ |
+| 第 2 个 token | $x,y_1$ | $p_2$ 与 $q_2$ |
+| 第 10 个 token | $x,y_1,\ldots,y_9$ | $p_{10}$ 与 $q_{10}$ |
 
-$\tau^2$ 是常见温度补偿约定，不是 KL 定义的一部分。以下代码只展示对齐后的核心计算，假定外部已构造好 attention mask 和 response mask：
+每行都比较整个词表的分布。教师选出的那个 token 只是其中一个。预测 $y_t$ 时，模型不能看到 $y_t$ 本身。
 
-```python
-# logits: [batch, input_length, vocabulary]
-# response_mask: [batch, input_length]，标记 token 本身是否为有效回答
-# 两个模型使用完全相同的 input_ids / attention_mask
-with torch.no_grad():
-    teacher_logits = teacher(**inputs).logits
-student_logits = student(**inputs).logits
+令温度为 $\tau>0$。对教师和学生 logits 分别计算 softmax，再逐位置计算 KL。只汇总有效回答位置，排除输入和 padding。
 
-log_p = (teacher_logits[:, :-1].float() / tau).log_softmax(-1)
-log_q = (student_logits[:, :-1].float() / tau).log_softmax(-1)
-mask = response_mask[:, 1:].to(log_q.dtype)  # 右侧 token 是预测目标
-if mask.sum().item() == 0:
-    raise ValueError("batch 中没有有效的 response 预测位置")
-
-p = log_p.exp()
-token_fkl = (p * (log_p - log_q)).sum(-1)
-loss = tau**2 * (token_fkl * mask).sum() / mask.sum()
-loss.backward()  # 只更新 student；随后由训练器执行 optimizer.step()
-```
-
-这段是解释用的全词表计算，内存复杂度与 `batch × length × vocabulary` 有关。长序列工程实现通常需要分块或融合算子，不应直接缓存所有长序列的完整 logits。
-
-如果把核心损失替换为下面两行，而保持同一批教师前缀：
+下面是核心计算。`z_teacher`、`z_student` 和 `mask` 已完成预测位置对齐，教师 logits 已停止梯度。
 
 ```python
-q = log_q.exp()
-token_rkl = (q * (log_q - log_p)).sum(-1)
+# logits: [batch, response_positions, vocabulary]
+log_p = (z_teacher.float() / tau).log_softmax(-1)
+log_q = (z_student.float() / tau).log_softmax(-1)
+token_loss = (log_p.exp() * (log_p - log_q)).sum(-1)
+loss = tau**2 * (token_loss * mask).sum() / mask.sum()
+loss.backward()  # 只更新学生；训练器随后执行 optimizer.step()
 ```
 
-它仍是  **off-policy RKL** 。若要转为论文的 OPD，必须让学生生成 response，再让冻结教师对这些 **学生前缀** 重新前向打分。教师原先在自己回答上缓存的 logits 不能搬到不同前缀上使用。
+训练器需拒绝 `mask.sum() == 0` 的 batch。$\tau^2$ 是常见的温度补偿约定，不是 KL 定义的一部分。长序列训练通常还需要分块计算，以控制全词表 logits 的内存占用。
 
- **只有 teacher 文本，没有 logits 怎么办？** 可以做硬标签 SFT。只有采样 token 的 teacher log-prob，也不足以精确重建全词表 FKL；但在合适的学生采样与策略梯度估计中，可用于 sampled RKL。top-k logits 也不是完整分布：截断后重归一化会改变目标，必须说明近似方式；不同 tokenizer 更不能直接按词表下标计算 KL。
+只有教师文本时，可以做 SFT。只有被选中 token 的 log-prob 时，不能精确计算全词表 FKL。top-k logits 需要额外近似。不同 tokenizer 也不能直接按词表下标计算 KL。
 
-## 05｜看梯度，才知道 FKL 与 RKL 的差异在哪里
+## 4｜RKL：改变分布匹配的方向
 
-先固定一个前缀，令 $q=\operatorname{softmax}(z)$，温度暂取 1，教师 $p$ 冻结。对学生第 $j$ 个 logit 的精确梯度为：
-
-$$
-\frac{\partial L_F}{\partial z_j}=q_j-p_j.
-$$
-
-若教师认为 token $j$ 很重要、学生却几乎不给概率，$p_j$ 仍会直接推动它上升。这解释了 FKL 的  **mode-covering 倾向** ：遗漏教师高概率行为会受到明显惩罚。
-
-反向 KL 是：
+保留同一批教师前缀，把损失改成：
 
 $$
-L_R=\sum_vq_v\log\frac{q_v}{p_v},\qquad
+L_R=\operatorname{KL}(q\|p)
++=\sum_vq(v)\log\frac{q(v)}{p(v)}.
+$$
+
+这就是  **off-policy RKL 蒸馏** 。对应代码是：
+
+```python
+token_loss = (log_q.exp() * (log_q - log_p)).sum(-1)
+```
+
+FKL 按教师概率 $p$ 加权。RKL 按学生概率 $q$ 加权。数据没有变，计算差异的方式变了。
+
+### 4.1 梯度说明了什么
+
+固定前缀，取温度为 1。令学生分布 $q=\operatorname{softmax}(z)$，教师固定。对学生第 $j$ 个 logit，有：
+
+$$
+\frac{\partial L_F}{\partial z_j}=q_j-p_j,
+\qquad
 \frac{\partial L_R}{\partial z_j}
-=q_j\left(\log\frac{q_j}{p_j}-L_R\right).
++=q_j\left(\log\frac{q_j}{p_j}-L_R\right).
 $$
 
-学生把概率放到教师极不认可的位置时，RKL 会施加压力；学生本来几乎不选的 token，则有外层 $q_j$ 抑制其 logit 梯度。这有助于理解 RKL 的  **mode-seeking 倾向** ，但它不是“必然只选一个模式”的定理，更不保证选中的模式任务奖励最高。若模型能完整表达教师，且无其他约束，两种 KL 的全局最优都是 $q=p$。
+ **FKL：** 如果教师给某个 token 很高概率，而学生几乎不选它，$p_j$ 仍会直接推动学生提高它的概率。这通常有利于保留教师分布中的多种行为。
 
-### “学生初始弱”究竟意味着什么
+ **RKL：** 损失更关注学生已经分配概率的区域。如果学生常选教师认为不合理的 token，RKL 会压低这些选择。学生几乎不选的 token，其 logit 梯度受外层 $q_j$ 抑制。
 
-需要分开三个障碍：
+这分别对应常说的 mode-covering 和 mode-seeking 倾向。它们不是性能排名。如果学生能完整表示教师，两种 KL 的全局最优都是 $q=p$。
 
--  **容量：** 学生模型族根本无法表示教师所有行为，训练不能凭空增加模型容量。
--  **访问：** 学生很少到达好的推理前缀，on-policy 数据就很少包含这些区域；FKL 教师轨迹预热可以先把它带进去。
--  **优化与估计：** 概率差距大可能带来极端 log-ratio；只采样少量 token 估计梯度时尤其可能方差高。全词表计算减少了当前前缀上的 token 采样噪声，却不解决所有前缀覆盖问题。
+### 4.2 学生答不对，不代表 RKL 无效
 
-因此， **答错的学生 rollout 依然可以学** ：教师能在这些前缀上给出相对更好的 next-token 分布。但密集教师 log-prob 不是显式的步骤正确性标签；若前缀已经不可恢复，或教师本身不可靠，监督也可能有限。论文只证明其设置中的预热有收益，没有给出“低于某正确率就不适合 RKL”的阈值。
+“学生基础弱”至少有三种情况：
 
-### 序列 KL、token KL 与“实际反传”还差一层
+| 问题 | 表现 | 影响 |
+| --- | --- | --- |
+| 容量不足 | 学生无法表示教师的部分行为 | 改损失也不能消除容量限制 |
+| 前缀访问不足 | 学生很少生成有效推理的开头 | on-policy 数据缺少这些学习机会 |
+| 梯度估计不稳定 | 教师与学生概率差距大，log-ratio 极端 | 少量采样估计可能有较高方差 |
 
-对于包含 EOS、归一化良好的自回归序列分布，KL 链式法则给出：
+即使整条回答错误，教师仍可能指出当前前缀下更合理的下一个 token。因此，错误 rollout 也能用于训练。
 
-$$
-\operatorname{KL}(\pi_T\|\pi_\theta)
-=\mathbb E_{y\sim\pi_T}\sum_t
-\operatorname{KL}\!\left(p(\cdot\mid s_t)\|q(\cdot\mid s_t)\right),
-$$
+但教师不一定能修复任何错误前缀。FKL 预热的作用，是先让学生接触教师常用的行为，再进行学生轨迹上的学习。它没有增加学生容量，也不保证所有任务都必须先预热。
 
-$$
-\operatorname{KL}(\pi_\theta\|\pi_T)
-=\mathbb E_{y\sim\pi_\theta}\sum_t
-\operatorname{KL}\!\left(q(\cdot\mid s_t)\|p(\cdot\mid s_t)\right).
-$$
+## 5｜OPD 与 GRPO：学生都生成，但反馈不同
 
-这里求和是逐序列累计；随意按长度归一化可能改变目标。两条公式中， **外层前缀分布随 KL 方向一起改变** 。教师前缀上的 RKL 当然可以训练，却不是第二条序列 RKL 的无偏估计。
+### 5.1 OPD 用教师分布评价学生的选择
 
-第二条等式还不能解释成“学生采样后，把 token KL 反传一下，就是完整序列 KL 的精确梯度”。因为学生参数也影响 **访问哪些前缀** ；把采样前缀当常量会忽略这部分导数，得到局部 surrogate / semi-gradient。token 损失的精确计算与序列目标的精确梯度，是两个不同问题。
+论文中的 OPD 按以下顺序执行：
 
-对完整序列目标 $K(\theta)=\operatorname{KL}(\pi_\theta\|\pi_T)$，在适当可微条件下，精确 score-function 梯度是：
+1. 当前学生生成回答。
+2. 冻结教师读取这些 **学生前缀** ，计算 next-token 分布。
+3. 在相同前缀上，用 RKL 更新学生。
+4. 用更新后的学生继续采样。
 
-$$
-\nabla_\theta K
-=\mathbb E_{y\sim\pi_\theta}
-\left[\left(\log\pi_\theta(y\mid x)-\log\pi_T(y\mid x)\right)
-\nabla_\theta\log\pi_\theta(y\mid x)\right].
-$$
+教师在自己回答上缓存的 logits 不能直接用于不同的学生前缀。条件输入变了，教师分布也会变。
 
-求导产生的额外常数项因 $\mathbb E[\nabla\log\pi_\theta]=0$ 消失。序列 log-prob 是 token log-prob 之和；实现中可用 reward-to-go 与 baseline 降低方差，但保留或丢弃未来回报会改变所用梯度估计。
+因此，“谁生成回答”比“谁提供 logits”更能说明是否 on-policy。教师提供反馈，并不会使 OPD 变成 off-policy。
 
- **实现陷阱：** 直接对一个已采样 token 的 `log_q - log_p` 做普通反传，并不会自动处理离散采样分布的导数。sampled RKL 需要正确的策略梯度 surrogate、停止梯度和采样分布处理；不能把一个数值上像 KL 的 Monte Carlo 值当作正确训练梯度。[Thinking Machines 的实现](https://thinkingmachines.ai/blog/on-policy-distillation/#loss-function-reverse-kl)明确采用只优化当前 token 的简化，并说明未考虑未来 token；它是工程选择，不是完整序列梯度恒等式。
+### 5.2 GRPO 用任务奖励比较多条回答
 
-## 06｜为什么 OPD 像 RL，却不等于 GRPO 或奖励最优
+GRPO 对同一题生成 $G$ 条回答，再由 verifier 给出奖励 $R_i$。verifier 可以是答案检查器或代码测试。
 
-论文的理论先定义了一个 **KL 正则化的奖励目标** 。对固定 prompt，令任务奖励为 $R(x,y)$，参考策略为 $\pi_{\rm ref}$，正则强度为 $\beta>0$：
+常见的组内优势为：
 
 $$
-F(\pi)=\mathbb E_{y\sim\pi}[R(x,y)]
--\beta\operatorname{KL}(\pi\|\pi_{\rm ref}).
+\widehat A_i=
+\frac{R_i-\overline R}{\operatorname{std}(R_1,\ldots,R_G)+\epsilon}.
 $$
 
-不受学生容量约束时，其最优分布是：
+$\overline R$ 是组内平均奖励，$\epsilon$ 用于防止零除。GRPO 用这些相对优势和裁剪目标更新策略。它不要求教师提供 next-token 分布。
 
-$$
-\pi_R^*(y\mid x)=\frac{1}{Z_R(x)}
-\pi_{\rm ref}(y\mid x)\exp\left(\frac{R(x,y)}{\beta}\right).
-$$
+如果一组二元奖励全为零或全为一，中心化后的奖励优势为零。这组样本无法提供这种相对奖励信号。可选的 KL 正则项仍可能产生梯度。[DeepSeekMath：GRPO 原始论文](https://arxiv.org/abs/2402.03300)
 
-$Z_R$ 负责归一化。这个式子表示在参考分布上提高高奖励回答的权重；它不是说 GRPO 一定精确达到这个分布。论文将 RL 后教师视为它的近似代理。
+| 方法 | 回答由谁生成 | 主要反馈 | 学习目标 |
+| --- | --- | --- | --- |
+| 教师文本 SFT | 教师 | 目标 token | 提高给定文本的概率 |
+| 教师轨迹 FKL | 教师 | 教师分布 | 匹配教师分布 |
+| 本文的 OPD | 当前学生 | 教师分布 | 在学生前缀上降低 RKL |
+| outcome-reward GRPO | 近期学生策略 | 整条回答的任务奖励 | 提高高奖励回答的概率 |
 
-### 密集的隐式奖励：局部等价的含义
+OPD 可以借用 RL 的采样和更新框架。但它使用的教师反馈，不等于任务奖励。教师概率高，也不等于答案一定正确。
 
-取当前学生 $\pi_k$ 为固定锚点，定义教师诱导的序列奖励：
+## 6｜容量与目标：更像教师，不保证奖励最高
 
-$$
-\widetilde R_T^k(x,y)
-=\beta\sum_t\log\frac{\pi_T(y_t\mid s_t)}{\pi_k(y_t\mid s_t)}.
-$$
+### 6.1 容量受限时，FKL 与 RKL 可能选出不同策略
 
-在 $\theta=\theta_k$ 处，负序列 RKL 梯度等于以此固定奖励作 policy gradient 的梯度。它解释了 OPD 为什么可借用 RL 的 rollout 与更新框架：每个 token 都有教师与学生的 log-ratio 信号。 **这是围绕当前策略的局部梯度解释，不表示教师 log-prob 就是真实 verifier 奖励，也不保证持续降低 KL 会持续提高真实正确率。** [原论文式 1—3、附录 A](https://arxiv.org/html/2605.12483v5#A1)
-
-GRPO 的监督源不同：同一题从近期策略采样 $G$ 个回答，verifier 得到 $R_i$，典型 outcome-reward 组内优势为：
-
-$$
-\widehat A_i=\frac{R_i-\overline R}{\operatorname{std}(R_1,\ldots,R_G)+\epsilon}.
-$$
-
-然后用 token 概率比 $\rho_{it}=\pi_\theta(y_{it}\mid s_{it})/\pi_{\rm old}(y_{it}\mid s_{it})$ 优化裁剪目标；省略可选 KL 正则项后，常见形式是最大化：
-
-$$
-\frac{1}{G}\sum_i\frac{1}{T_i}\sum_t
-\min\!\left(\rho_{it}\widehat A_i,
-\operatorname{clip}(\rho_{it},1-\delta,1+\delta)\widehat A_i\right).
-$$
-
-$T_i$ 是回答长度，$\delta$ 是裁剪幅度，$\epsilon$ 防止零除；不同实现的归一化和 KL 项可以不同。 **若组内二元奖励全为零或全为一，中心化后的奖励优势为零** ，该组无法提供这种相对奖励信号；可选 KL 正则仍可能产生梯度。GRPO 不需要教师 next-token 分布，其关键是任务奖励而非模仿教师。[DeepSeekMath：GRPO 原始论文](https://arxiv.org/abs/2402.03300)
-
-### 容量约束：蒸馏是在可实现的策略族中做投影
-
-学生只能从模型族 $\Pi_S$ 中选策略。于是实际问题可能是：
+学生只能表示某个策略集合 $\Pi_S$。蒸馏需要在这个集合内找到最接近教师的策略：
 
 $$
 \widehat\pi_F=\arg\min_{\pi\in\Pi_S}\operatorname{KL}(\pi_T\|\pi),
@@ -285,44 +226,138 @@ $$
 \widehat\pi_R=\arg\min_{\pi\in\Pi_S}\operatorname{KL}(\pi\|\pi_T).
 $$
 
-若教师不在 $\Pi_S$ 内，两种投影通常不同：FKL 更重视覆盖教师概率质量，RKL 更重视避免把学生概率放到教师低概率区域。选型因此取决于学生容量、数据访问与评价指标，不能仅用“覆盖型 / 寻模态型”两个标签决定胜负。
+这就是 **策略投影** ：学生无法完整表示教师分布时，需要选择一个可实现的近似。两种 KL 使用不同的误差权重，可能得到不同结果。实际结果还取决于训练前缀和优化过程。
 
-更关键的是， **KL 最优与原始奖励最优不等价** 。一个两答案的说明性反例：教师概率为 $(0.6,0.4)$，奖励为 $(1,0)$；可行学生族只有 $(0.6,0.4)$ 与 $(0.9,0.1)$。两种 KL 都选择前者，因为 KL 为零；单看期望奖励则选择后者，奖励由 0.6 升到 0.9。这是数学反例，不是论文实验。
+### 6.2 KL 最优与奖励最优是不同目标
 
-但存在一个值得保留的精确联系：当教师 **恰好等于** 前面的 $\pi_R^*$，且参考策略与 $\beta$ 一致时，代入定义可得：
+考虑只有两个答案的例子：
+
+| 分布或奖励 | 正确答案 | 错误答案 |
+| --- | --- | --- |
+| 教师概率 | 0.6 | 0.4 |
+| 学生方案 A | 0.6 | 0.4 |
+| 学生方案 B | 0.9 | 0.1 |
+| 任务奖励 | 1 | 0 |
+
+方案 A 的 KL 为零，最像教师。方案 B 的期望奖励为 0.9，高于方案 A 的 0.6。 **因此，降低 KL 不能代替任务评测。**  这是说明性反例，不是论文实验。
+
+存在一个有条件的等价关系：如果教师恰好等于某个  **KL 正则化奖励目标** 的最优分布，那么最小化序列 RKL，等价于最大化那个带正则的目标。它仍不等价于只最大化正确率。推导见附录。
+
+## 7｜实验结果与方法选型
+
+### 7.1 论文实际测到了什么
+
+下表固定学生为 Qwen3-1.7B，教师为 8B。训练使用完整 DAPO 数据， **没有追加学生 GRPO** 。
+
+| 学生训练路线 | MATH-500 | AIME 2024 |
+| --- | --- | --- |
+| 直接学生 GRPO | 75.9 ± 0.9 | 19.8 ± 1.4 |
+| 原始教师 → FKL + OPD | 71.5 ± 0.9 | 15.0 ± 1.5 |
+| RL 后教师 → 仅 OPD | 77.6 ± 0.8 | 23.0 ± 1.4 |
+| RL 后教师 → 教师文本 SFT | 76.0 ± 0.9 | 22.4 ± 1.5 |
+|  **RL 后教师 → FKL + OPD**  |  **79.3 ± 0.7**  |  **25.2 ± 1.6**  |
+
+数据来自原论文表 1、表 2，单位为百分比。avg@16 指每题生成 16 次后计算平均正确率，不是 pass@16。± 是跨评测题目的标准误，不是多次独立训练的波动。
+
+这组结果支持两个判断： **目标任务上的教师质量很重要；FKL 预热能改善后续 OPD。**  仅 OPD 达到 77.6%，也说明冷启动 OPD 在这个实验中并没有失效。
+
+读这些结果时，还需保留三个限制：
+
+- “无 OPD”行使用教师文本 SFT。它不是“保留同一 FKL 预热，只删除 OPD”的严格单因素对照。
+- 另一个半数据实验中，桥接后的学生从 75.4% 提高到 78.5%。这项增益来自新题上的学生 GRPO，不能直接加到上表的 79.3% 上。
+- 8B 教师优先路线约用了直接学生 GRPO 的 4 倍算力。论文主要比较标注数据的分配，不证明同等总算力下这条路线最好。
+
+Llama 和代码实验也发现：原始教师迁移的结果低于直接 GRPO，RL 后教师迁移的结果高于直接 GRPO。这些结果仍限于论文测试的模型与任务。[原论文表 1—4、附录 F](https://arxiv.org/html/2605.12483v5#S4)
+
+### 7.2 按当前缺少的条件选择方法
+
+以下是工程建议，不是论文给出的统一排名。
+
+| 当前条件 | 可先尝试 | 重点检查 |
+| --- | --- | --- |
+| 只有可靠答案文本 | SFT | 答案质量、格式和长度 |
+| 有完整教师 logits，学生差距较大 | 教师轨迹 FKL | 教师是否擅长目标任务、token 是否对齐 |
+| 教师前缀上表现好，学生自己生成时跑偏 | OPD | 教师在学生前缀上的反馈质量 |
+| 学生已能探索，且有可靠 verifier | GRPO | 组内奖励差异、独立验证集表现 |
+| 标注题稀缺，且有较强教师和训练预算 | 比较教师 RL → FKL → OPD | 总算力、教师查询量及最终收益 |
+
+至少比较 SFT、FKL-only、OPD-only、FKL → OPD 和直接 GRPO。固定学生规模、题目池和解码设置，同时记录正确率、输出长度和总成本。 **用验证集决定方法，不用训练 loss 代替结果。** 
+
+## 附录｜序列梯度与奖励目标的边界
+
+下面补充主线所需的数学条件。首次阅读可以先跳过。
+
+### A｜逐 token 计算 KL，不等于已求出完整序列梯度
+
+设输入为 $x$，回答为 $y=(y_1,\ldots,y_T)$，前缀为 $s_t=(x,y_{<t})$。对包含 EOS、归一化良好的自回归序列分布，KL 链式法则给出：
+
+$$
+\operatorname{KL}(\pi_\theta\|\pi_T)
+=\mathbb E_{y\sim\pi_\theta}\sum_t
+\operatorname{KL}\!\left(\pi_\theta(\cdot\mid s_t)\|\pi_T(\cdot\mid s_t)\right).
+$$
+
+FKL 的对应等式使用教师轨迹，而不是学生轨迹。两者都是逐序列求和。按长度归一化可能改变目标。
+
+右侧的学生参数影响两件事：当前前缀的 token 分布，以及模型会访问哪些前缀。把已采样前缀当常量，只反传 token KL，会忽略后一项。这是一种局部更新近似。
+
+对完整序列 RKL，精确的 score-function 梯度为：
+
+$$
+\nabla_\theta\operatorname{KL}(\pi_\theta\|\pi_T)
+=\mathbb E_{y\sim\pi_\theta}
+\left[\log\frac{\pi_\theta(y\mid x)}{\pi_T(y\mid x)}
+\nabla_\theta\log\pi_\theta(y\mid x)\right].
+$$
+
+因此，直接对一个已采样 token 的 `log_q - log_p` 反传，不会自动得到上述梯度。sampled RKL 需要正确处理采样分布、停止梯度和策略梯度估计。
+
+[Thinking Machines 的 OPD 实现](https://thinkingmachines.ai/blog/on-policy-distillation/#loss-function-reverse-kl)采用只优化当前 token 的简化，不计算未来 token 回报。应把它看作工程选择，而非完整序列梯度恒等式。
+
+### B｜OPD 的隐式奖励是局部解释
+
+固定当前学生 $\pi_k$。论文定义：
+
+$$
+\widetilde R_T^k(x,y)
+=\beta\sum_t\log\frac{\pi_T(y_t\mid s_t)}{\pi_k(y_t\mid s_t)}.
+$$
+
+$\beta>0$ 是缩放系数。在 $\pi_k$ 处，用这个固定奖励计算的策略梯度，等于负序列 RKL 梯度乘以 $\beta$。这说明 OPD 可以用密集的教师信号进行局部策略更新。
+
+这个等式不说明教师反馈等于真实任务奖励，也不保证任务正确率随 KL 单调改善。[原论文附录 A](https://arxiv.org/html/2605.12483v5#A1)
+
+### C｜RKL 何时等价于带正则的奖励优化
+
+设任务奖励为 $R(x,y)$，参考策略为 $\pi_{\rm ref}$，正则强度为 $\beta>0$。考虑目标：
+
+$$
+F(\pi)=\mathbb E_{y\sim\pi}[R(x,y)]
+-\beta\operatorname{KL}(\pi\|\pi_{\rm ref}).
+$$
+
+不受学生容量约束时，最优分布为：
+
+$$
+\pi_R^*(y\mid x)=\frac{1}{Z_R(x)}
+\pi_{\rm ref}(y\mid x)\exp\left(\frac{R(x,y)}{\beta}\right).
+$$
+
+$Z_R$ 是归一化常数。将这个分布代入 KL 定义，可得：
 
 $$
 F(\pi)=\beta\log Z_R(x)
 -\beta\operatorname{KL}(\pi\|\pi_R^*).
 $$
 
-因此，在同一可行模型族中，最小化 **序列 RKL** 等价于最大化这个 **带 KL 正则的奖励目标** ；它仍不等价于只最大化 $\mathbb E[R]$。现实中教师只是近似目标、token 局部更新又可能近似序列梯度，所以这条理想等价关系不能直接当作实际奖励单调上升的保证。
+所以，当教师恰好为 $\pi_R^*$，且参考策略与 $\beta$ 一致时，在同一学生策略集合内，最小化序列 RKL 就等价于最大化 $F$。
 
-## 07｜实践选型：先识别瓶颈，再选训练信号
+实际教师只是近似。实际训练也可能使用局部梯度。因此，不能把这条有条件的等价关系直接当作训练结果保证。
 
-下表是依据前文推导整理的工程建议，不是原论文提供的普适排名。
+## 来源与核验范围
 
-| 眼前的约束 | 合理起点 | 必须核验的风险 |
-| --- | --- | --- |
-| 只有可靠答案文本 | 硬标签 SFT / 序列蒸馏 | 答案筛选、长度和模板是否适合学生 |
-| 有教师完整 logits，学生与教师差距大 | 教师轨迹 FKL 预热 | 教师目标能力、token 对齐、有效概率覆盖 |
-| 教师前缀表现好，学生自生成容易跑偏 | 学生 rollout 上的蒸馏；RKL 是候选 | 当前策略采样、教师在错误前缀上的质量、熵与多样性 |
-| 标注题稀缺，较强教师可利用奖励继续提升 | 实验比较教师 RL → FKL → OPD | 教师训练和查询成本，固定数据预算下的收益 |
-| 学生已具备可用探索能力、verifier 可靠 | 直接或桥接后的 GRPO | 组内奖励是否有差异、reward hacking、独立泛化 |
-| tokenizer 不同或只能获得 top-k 分布 | 先做可验证的文本迁移或显式对齐方案 | 不能把不兼容的分布强行当作精确 token KL |
+-  **主线论文：** [Xu、Sang 等，arXiv:2605.12483v5](https://arxiv.org/abs/2605.12483v5)，2026-10-12 修订。实验数据核对表 1—4 与附录 F，理论核对第 3 节与附录 A。[作者链接的代码](https://github.com/HJSang/OPSD_OnPolicyDistillation)。
+-  **on-policy 蒸馏：** [Agarwal 等，On-Policy Distillation of Language Models / GKD](https://arxiv.org/abs/2306.13649)，ICLR 2024。[Kevin Lu / Thinking Machines Lab，On-Policy Distillation](https://thinkingmachines.ai/blog/on-policy-distillation/)，2025-10-27。
+-  **GRPO：** [Shao 等，DeepSeekMath](https://arxiv.org/abs/2402.03300)，2024。
 
-一个可执行的最小对照是： **SFT、FKL-only、OPD-only、FKL → OPD、直接 GRPO** 。若教师需另行训练，再加原始教师与 RL 教师对照；若追加学生 RL，则保留同一桥接初始化下的新题与旧题重放对照。为判断“删 OPD”的独立贡献，应另保留完全相同的 FKL-only checkpoint，而不同时换成硬标签 SFT。
-
-评测时固定学生规模、训练题池与解码协议，同时报告教师查询量、训练 token 数、总 GPU 时间、正确率、输出长度和多样性。KL 下降只能说明更像教师；部署选型仍要看独立验证集的任务质量、延迟和成本。训练日志至少区分 token FKL/RKL、有效 token 数、熵、log-ratio 分位数、组内奖励方差和无有效奖励优势的组占比，避免只盯一个 loss。
-
-本文留下的核心判断是： **稀疏奖励负责发现什么行为值得做，密集蒸馏负责让学生学会已有行为；rollout 决定在哪些状态学习，KL 方向决定如何衡量分布差异，容量决定能保留多少。** 这几个层次拆开后，SFT、OPD 与 GRPO 才能在同一训练系统中各司其职。
-
-## 08｜来源、核验边界与后续阅读
-
-1.  **主线论文：** [Xu、Sang 等，arXiv:2605.12483v5](https://arxiv.org/abs/2605.12483v5)，2026-10-12 修订。[HTML 全文](https://arxiv.org/html/2605.12483v5)。重点核对第 2—4 节、表 1—4，以及附录 A、C、F；本文表格和两幅图均根据论文重新整理，不是原图复制。
-2.  **on-policy 蒸馏的广义框架：** [Agarwal 等，On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes / GKD](https://arxiv.org/abs/2306.13649)，ICLR 2024。用于说明学生轨迹与损失函数选择是可分开的维度。
-3.  **sampled RKL 的工程解释：** [Kevin Lu / Thinking Machines Lab，On-Policy Distillation](https://thinkingmachines.ai/blog/on-policy-distillation/)，2025-10-27。尤其关注其当前 token 更新、discount 取零的实现简化；不把文中的直观措辞理解为任务正确性保证。
-4.  **GRPO：** [Shao 等，DeepSeekMath](https://arxiv.org/abs/2402.03300)，2024。本文仅给出 outcome-reward GRPO 的典型结构，不声称复现所有工程变体。
-5.  **论文链接的实现入口：** [HJSang/OPSD_OnPolicyDistillation](https://github.com/HJSang/OPSD_OnPolicyDistillation)。复现时仍应核对具体 commit、run 配置和公开产物；本文完成了原文核验，未重跑训练实验，也未逐行审计全部实现。
-
- **阅读边界：** 本文是中文学习笔记与独立推导，不是论文完整译文。前序讨论中的疑问被重新整理为第 3—6 节；未以不可核验的聊天结论替代原始资料。论文证据集中于可验证数学与代码、1.7B—8B 部署学生；尚不能外推为开放式写作、跨 tokenizer 蒸馏或更大规模模型的必然规律。后续最值得补的实验是等总算力对照、多训练随机种子，以及固定 FKL 预热后的独立 OPD 消融。
+本文是中文学习笔记。概念解释、代码片段和反例由本文整理，不是论文实验。已核对原文，未重跑训练。论文主要测试可验证数学与代码任务，部署学生为 1.7B—8B；结论不能直接推广到所有模型和任务。
